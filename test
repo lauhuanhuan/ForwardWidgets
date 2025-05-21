@@ -1,16 +1,16 @@
 var WidgetMetadata = {
     id: "ph_favorites_webview",
     title: "Pornhub 收藏夹 (WebView)",
-    description: "通过 WebView 打开收藏视频详情页播放",
+    description: "点击视频打开原始页面播放",
     author: "pp",
     site: "https://cn.pornhub.com",
-    version: "1.0.1",
+    version: "1.0.2",
     requiredVersion: "0.0.1",
     modules: [
         {
             title: "我的收藏视频",
-            description: "加载并跳转到收藏夹视频详情页",
-            requiresWebView: true, // ✅ 关键点：强制启用 WebView 播放详情页
+            description: "加载并跳转到收藏夹视频详情页播放",
+            requiresWebView: true,
             functionName: "fetchFavoritesWebView",
             sectionMode: false,
             params: [
@@ -62,8 +62,8 @@ async function fetchFavoritesWebView(params = {}) {
                 durationText,
                 mediaType: "movie",
                 genreTitle: "收藏",
-                link, // ✅ Forward 会通过 WebView 打开该地址
-                description: "点击打开视频页面播放"
+                link, // ✅ 仅保留 link 字段
+                description: "点击跳转到 Pornhub 原始页面播放"
             };
         }).get().filter(Boolean);
 
