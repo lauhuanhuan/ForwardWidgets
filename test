@@ -1,0 +1,115 @@
+var WidgetMetadata = {
+    id: "ph_favorites_widget",
+    title: "Pornhub 我的收藏",
+    description: "抓取并播放收藏夹中的视频，支持多清晰度切换",
+    author: "ChatGPT",
+    site: "https://cn.pornhub.com",
+    version: "1.1.0",
+    requiredVersion: "0.0.1",
+    modules: [
+        {
+            title: "我的收藏视频",
+            description: "从收藏夹页面加载视频",
+            requiresWebView: false,
+            functionName: "fetchFavorites",
+            sectionMode: false,
+            params: [
+                {
+                    name: "url",
+                    title: "收藏页地址",
+                    type: "input",
+                    description: "请输入你的收藏页链接，如 https://cn.pornhub.com/users/你的用户名/videos/favorites",
+                    value: "https://cn.pornhub.com/users/aaaaa/videos/favorites"
+                }
+            ]
+        }
+    ]
+};
+
+async function fetchFavorites(params = {}) {
+    try {
+        const url = params.url;
+        if (!url || !url.includes("pornhub.com")) {
+            throw new Error("请输入有效的 Pornhub 收藏链接");
+        }
+
+        const response = await Widget.http.get(url, {
+            headers: {
+                "User-Agent": "Mozilla/5.0",
+                "Referer": "https://cn.pornhub.com"
+            }
+        });
+
+        const $ = Widget.html.load(response.data);
+        const videoElements = $("ul.videos li.videoBox");
+
+        const videos = videoElements.map((i, el) => {
+            const element = $(el);
+            const title = element.find("span.title a").text().trim();
+            const link = "https://cn.pornhub.com" + element.find("a").attr("href");
+            const posterPath = element.find("img").attr("data-thumb_url") || element.find("img").attr("src");
+            const durationText = element.find(".duration").text().trim();
+
+            return {
+                id: link,
+                type: "url",
+                title,
+                posterPath,
+                backdropPath: posterPath,
+                releaseDate: "",
+                mediaType: "movie",
+                rating: "",
+                genreTitle: "收藏",
+                durationText,
+                link,
+                description: "Pornhub 收藏视频，点击选择清晰度播放"
+            };
+        }).get();
+
+        return videos;
+    } catch (error) {
+        console.error("处理失败:", error);
+        throw error;
+    }
+}
+
+async function loadDetail(link) {
+    try {
+        const response = await Widget.http.get(link, {
+            headers: {
+                "User-Agent": "Mozilla/5.0",
+                "Referer": "https://cn.pornhub.com"
+            }
+        });
+
+        const html = response.data;
+        const match = html.match(/"mediaDefinitions":(\[.*?\]),/);
+        if (!match) throw new Error("无法提取视频地址");
+
+        const mediaDefinitions = JSON.parse(match[1]);
+
+        const availableVideos = mediaDefinitions
+            .filter(item => item.videoUrl && item.format === "mp4")
+            .map(item => ({
+                quality: item.quality,
+                videoUrl: item.videoUrl
+            }));
+
+        if (availableVideos.length === 0) throw new Error("未找到可播放的视频链接");
+
+        // 默认播放第一个，支持手动切换（播放器支持多清晰度）
+        return {
+            videoUrl: availableVideos[0].videoUrl,
+            childItems: availableVideos.map(video => ({
+                id: video.videoUrl,
+                type: "url",
+                title: `${video.quality}p`,
+                videoUrl: video.videoUrl,
+                description: `${video.quality}p 清晰度`
+            }))
+        };
+    } catch (error) {
+        console.error("视频加载失败:", error);
+        throw error;
+    }
+}
