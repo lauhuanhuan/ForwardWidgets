@@ -4,13 +4,13 @@
   "icon": "https://raw.githubusercontent.com/lauhuanhuan/ForwardWidgets/refs/heads/main/icon.png",
   "widgets": [
      {
-      "id": "douban",
-      "title": "豆瓣",
-      "description": "解析豆瓣片单，获取视频信息",
+      "id": "pornhub",
+      "title": "Pornhub收藏夹",
+      "description": "Pornhub收藏夹播放",
       "requiredVersion": "0.0.1",
       "version": "1.0.0",
-      "author": "pack1r",
-      "url": "https://raw.githubusercontent.com/pack1r/ForwardWidgets/refs/heads/main/widgets/douban.js"
+      "author": "pp",
+      "url": "https://raw.githubusercontent.com/lauhuanhuan/ForwardWidgets/refs/heads/main/test.js"
     }
   ]
 }
