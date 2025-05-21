@@ -1,7 +1,7 @@
 {
   "title": "pp",
   "description": "pp的测试",
-  "icon": "https://raw.githubusercontent.com/quantumultxx/FW-Widgets/refs/heads/main/icon.png",
+  "icon": "https://raw.githubusercontent.com/lauhuanhuan/ForwardWidgets/refs/heads/main/icon.png",
   "widgets": [
     {
       "id": "pornhub",
