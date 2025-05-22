@@ -4,7 +4,7 @@ var WidgetMetadata = {
     description: "在线播放收藏列表中的视频内容",
     author: "pp",
     site: "https://example.com",
-    version: "1.0.9",
+    version: "1.1.0",
     requiredVersion: "0.0.1",
     modules: [
         {
@@ -160,30 +160,76 @@ const HtmlParser = {
      * 提取视频信息
      */
     extractVideoInfo($element) {
-        const titleElement = $element.find('.title a, .phimage a');
-        const title = this.cleanText(titleElement.attr('title') || titleElement.text());
-        const viewUrl = titleElement.attr('href');
-        
-        // 获取封面图片
-        const imgElement = $element.find('img');
-        const coverUrl = imgElement.attr('data-src') || 
-                         imgElement.attr('src') || 
-                         imgElement.attr('data-mediumthumb') || 
-                         imgElement.attr('data-thumb_url') || "";
-        
-        // 获取其他信息
-        const duration = this.cleanText($element.find('.duration').text());
-        const rating = this.cleanText($element.find('.rating-container .percent, .percent').text());
-        const views = this.cleanText($element.find('.views').text());
-        
-        return {
-            title,
-            viewUrl,
-            coverUrl,
-            duration,
-            rating,
-            views
-        };
+        try {
+            // 尝试多种选择器获取标题和链接
+            let titleElement = $element.find('.title a');
+            if (titleElement.length === 0) {
+                titleElement = $element.find('.phimage a');
+            }
+            if (titleElement.length === 0) {
+                titleElement = $element.find('a[title]');
+            }
+            if (titleElement.length === 0) {
+                titleElement = $element.find('a').first();
+            }
+            
+            const title = this.cleanText(
+                titleElement.attr('title') || 
+                titleElement.text() || 
+                titleElement.find('img').attr('alt') || ""
+            );
+            
+            const viewUrl = titleElement.attr('href') || "";
+            
+            // 获取封面图片 - 尝试多种属性
+            const imgElement = $element.find('img').first();
+            const coverUrl = imgElement.attr('data-src') || 
+                             imgElement.attr('src') || 
+                             imgElement.attr('data-mediumthumb') || 
+                             imgElement.attr('data-thumb_url') || 
+                             imgElement.attr('data-original') || "";
+            
+            // 获取时长信息
+            const duration = this.cleanText(
+                $element.find('.duration').text() ||
+                $element.find('.video-duration').text() ||
+                $element.find('[class*="duration"]').text() || ""
+            );
+            
+            // 获取评分信息
+            const rating = this.cleanText(
+                $element.find('.rating-container .percent').text() ||
+                $element.find('.percent').text() ||
+                $element.find('[class*="rating"]').text() || ""
+            );
+            
+            // 获取观看次数
+            const views = this.cleanText(
+                $element.find('.views').text() ||
+                $element.find('[class*="view"]').text() || ""
+            );
+            
+            console.log(`提取信息 - 标题: "${title}", URL: "${viewUrl}", 封面: "${coverUrl ? '有' : '无'}", 时长: "${duration}"`);
+            
+            return {
+                title,
+                viewUrl,
+                coverUrl,
+                duration,
+                rating,
+                views
+            };
+        } catch (error) {
+            console.error('提取视频信息时出错:', error);
+            return {
+                title: "",
+                viewUrl: "",
+                coverUrl: "",
+                duration: "",
+                rating: "",
+                views: ""
+            };
+        }
     },
     
     /**
@@ -373,22 +419,29 @@ async function getFavoriteVideos(params = {}) {
                 const $element = $(videoElements[i]);
                 const videoInfo = HtmlParser.extractVideoInfo($element);
                 
+                console.log(`处理视频 ${i + 1}:`, {
+                    title: videoInfo.title,
+                    viewUrl: videoInfo.viewUrl,
+                    coverUrl: videoInfo.coverUrl ? '有封面' : '无封面',
+                    duration: videoInfo.duration
+                });
+                
                 if (!videoInfo.title || !videoInfo.viewUrl) {
-                    console.warn(`视频 ${i + 1}: 缺少必要信息，跳过`);
+                    console.warn(`视频 ${i + 1}: 缺少必要信息 - 标题: "${videoInfo.title}", URL: "${videoInfo.viewUrl}"`);
                     continue;
                 }
                 
                 // 提取视频ID
                 const videoId = UrlUtils.extractVideoId(videoInfo.viewUrl);
                 if (!videoId) {
-                    console.warn(`视频 ${i + 1}: 无法提取视频ID，跳过`);
+                    console.warn(`视频 ${i + 1}: 无法提取视频ID，URL: ${videoInfo.viewUrl}`);
                     continue;
                 }
                 
                 // 构建完整URL
                 const fullUrl = UrlUtils.buildFullUrl("https://cn.pornhub.com", videoInfo.viewUrl);
                 
-                console.log(`视频 ${i + 1}: "${videoInfo.title}" - ${videoId}`);
+                console.log(`✓ 成功处理视频 ${i + 1}: "${videoInfo.title}" - ID: ${videoId}`);
                 
                 // 创建视频项
                 const videoItem = {
@@ -410,9 +463,11 @@ async function getFavoriteVideos(params = {}) {
                 };
                 
                 videoItems.push(videoItem);
+                console.log(`当前已获取视频数量: ${videoItems.length}/${count}`);
                 
             } catch (itemError) {
                 console.error(`解析视频 ${i + 1} 时出错:`, itemError);
+                console.error(`错误详情:`, itemError.stack);
                 continue;
             }
         }
