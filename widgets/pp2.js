@@ -118,10 +118,29 @@ const ParamValidator = {
      * 验证数字参数
      */
     validateNumber(value, fieldName, min = 1, max = 100) {
-        const num = parseInt(value);
-        if (isNaN(num) || num < min || num > max) {
-            throw new Error(`${fieldName}必须是${min}-${max}之间的数字`);
+        // 处理空值或未定义的情况
+        if (value === null || value === undefined || value === '') {
+            console.log(`${fieldName}为空，使用默认值: ${min}`);
+            return min;
         }
+        
+        const num = parseInt(value);
+        if (isNaN(num)) {
+            console.log(`${fieldName}不是有效数字，使用默认值: ${min}`);
+            return min;
+        }
+        
+        // 确保数字在合理范围内
+        if (num < min) {
+            console.log(`${fieldName}(${num})小于最小值，使用: ${min}`);
+            return min;
+        }
+        
+        if (num > max) {
+            console.log(`${fieldName}(${num})大于最大值，使用: ${max}`);
+            return max;
+        }
+        
         return num;
     }
 };
@@ -308,8 +327,8 @@ async function getFavoriteVideos(params = {}) {
         
         const favoriteUrl = ParamValidator.validateUrl(params.favoriteUrl, "收藏列表地址");
         const apiUrl = ParamValidator.validateUrl(params.apiUrl || GlobalConfig.apiUrl, "API地址");
-        const page = ParamValidator.validateNumber(params.page, "页码", 1, 999);
-        const count = ParamValidator.validateNumber(params.count, "每页数量", 1, 50);
+        const page = ParamValidator.validateNumber(params.page || 1, "页码", 1, 999);
+        const count = ParamValidator.validateNumber(params.count || 20, "每页数量", 1, 50);
         
         // 更新全局配置
         GlobalConfig.updateApiUrl(apiUrl);
