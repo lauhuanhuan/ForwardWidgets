@@ -1,10 +1,10 @@
 var WidgetMetadata = {
     id: "favorites_viewer",
     title: "收藏列表观看器",
-    description: "获取用户收藏列表中的视频并在线观看1",
+    description: "获取用户收藏列表中的视频并在线观看",
     author: "pp",
     site: "https://example.com",
-    version: "1.1.6",
+    version: "1.0.1",
     requiredVersion: "0.0.1",
     modules: [
         {
