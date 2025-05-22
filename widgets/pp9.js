@@ -152,7 +152,7 @@ async function getFavoritesList(params = {}) {
                 console.log(`构造标准视频URL: ${standardVideoUrl}`);
 
                 const videoItem = {
-                    id: viewkey,
+                    id: standardVideoUrl,
                     type: "url", 
                     title: title,
                     posterPath: coverUrl,
