@@ -4,7 +4,7 @@ var WidgetMetadata = {
   description: "在线观看收藏列表",
   author: "pp",
   site: "https://cn.pornhub.com",
-  version: "1.0.1",
+  version: "1.0.6",
   requiredVersion: "0.0.1",
   modules: [
     {
