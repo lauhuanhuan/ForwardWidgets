@@ -1,402 +1,505 @@
 var WidgetMetadata = {
-  id: "GenericVideoPlayer",
-  title: "通用视频播放器",
-  description: "在线观看视频收藏列表",
-  author: "pp",
-  site: "https://example.com",
-  version: "1.0.2",
-  requiredVersion: "0.0.1",
-  modules: [
-      {
-          title: "收藏列表",
-          description: "展示收藏的视频",
-          requiresWebView: false,
-          functionName: "getFavoriteVideos",
-          sectionMode: false,
-          params: [
-              {
-                  name: "apiUrl",
-                  title: "接口地址",
-                  type: "input",
-                  description: "获取视频播放地址的API接口",
-                  value: "https://your-api-domain.com/get_video_links",
-                  placeholders: [
-                      {
-                          title: "默认接口",
-                          value: "https://your-api-domain.com/get_video_links"
-                      }
-                  ]
-              },
-              {
-                  name: "favoriteUrl",
-                  title: "收藏列表地址",
-                  type: "input",
-                  description: "收藏列表页面地址",
-                  value: "输入你的收藏列表地址",
-                  placeholders: [
-                      {
-                          title: "收藏列表地址",
-                          value: "输入你的收藏列表地址"
-                      }
-                  ]
-              },
-              {
-                  name: "page",
-                  title: "页码",
-                  type: "page",
-                  description: "当前页码",
-                  value: "1"
-              },
-              {
-                  name: "count",
-                  title: "每页数量",
-                  type: "count",
-                  description: "每页显示的视频数量",
-                  value: "20"
-              }
-          ]
-      }
-  ],
-  search: {
-      title: "搜索",
-      functionName: "search",
-      params: [
-          {
-              name: "keyword",
-              title: "关键词",
-              type: "input",
-              description: "搜索关键词",
-              value: ""
-          },
-          {
-              name: "searchUrl",
-              title: "搜索地址",
-              type: "input",
-              description: "搜索页面地址",
-              value: "输入搜索页面地址",
-              placeholders: [
-                  {
-                      title: "搜索地址",
-                      value: "输入搜索页面地址"
-                  }
-              ]
-          },
-          {
-              name: "page",
-              title: "页码",
-              type: "page",
-              description: "搜索结果页码",
-              value: "1"
-          }
-      ]
-  }
+    id: "VideoFavoritePlayer",
+    title: "视频收藏列表播放器",
+    description: "在线播放收藏列表中的视频内容",
+    author: "pp",
+    site: "https://example.com",
+    version: "1.1.0",
+    requiredVersion: "0.0.1",
+    modules: [
+        {
+            title: "收藏列表",
+            description: "获取并播放收藏列表中的视频",
+            requiresWebView: false,
+            functionName: "getFavoriteVideos",
+            sectionMode: false,
+            params: [
+                {
+                    name: "favoriteUrl",
+                    title: "收藏列表地址",
+                    type: "input",
+                    description: "收藏列表页面的完整URL地址",
+                    value: "",
+                    placeholders: [
+                        {
+                            title: "例如：https://cn.pornhub.com/users/username/videos/favorites",
+                            value: "https://cn.pornhub.com/users/username/videos/favorites"
+                        }
+                    ]
+                },
+                {
+                    name: "apiUrl",
+                    title: "视频解析API地址",
+                    type: "input",
+                    description: "用于获取视频播放地址的后端API接口",
+                    value: "http://localhost:16813/get_mp4_links",
+                    placeholders: [
+                        {
+                            title: "默认本地API",
+                            value: "http://localhost:16813/get_mp4_links"
+                        }
+                    ]
+                },
+                {
+                    name: "page",
+                    title: "页码",
+                    type: "page",
+                    description: "当前页码",
+                    value: "1"
+                },
+                {
+                    name: "count",
+                    title: "每页数量",
+                    type: "count",
+                    description: "每页显示的视频数量",
+                    value: "20"
+                }
+            ]
+        }
+    ]
 };
 
-// 全局变量存储配置
-let globalConfig = {
-  apiUrl: "https://your-api-domain.com/get_video_links"
+// 全局配置管理
+const GlobalConfig = {
+    apiUrl: "http://localhost:16813/get_mp4_links",
+    defaultHeaders: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1"
+    },
+    
+    // 更新API地址
+    updateApiUrl(newUrl) {
+        if (newUrl && newUrl.trim()) {
+            this.apiUrl = newUrl.trim();
+            console.log(`API地址已更新为: ${this.apiUrl}`);
+        }
+    }
 };
 
-// 获取收藏视频列表
+// 参数验证工具
+const ParamValidator = {
+    /**
+     * 验证必需参数
+     */
+    validateRequired(params, requiredFields) {
+        const missing = [];
+        requiredFields.forEach(field => {
+            if (!params[field] || params[field].toString().trim() === "") {
+                missing.push(field);
+            }
+        });
+        
+        if (missing.length > 0) {
+            throw new Error(`缺少必需参数: ${missing.join(', ')}`);
+        }
+    },
+    
+    /**
+     * 验证URL格式
+     */
+    validateUrl(url, fieldName = "URL") {
+        if (!url || typeof url !== 'string') {
+            throw new Error(`${fieldName}不能为空`);
+        }
+        
+        const trimmedUrl = url.trim();
+        if (!trimmedUrl.startsWith('http://') && !trimmedUrl.startsWith('https://')) {
+            throw new Error(`${fieldName}格式不正确，必须以http://或https://开头`);
+        }
+        
+        return trimmedUrl;
+    },
+    
+    /**
+     * 验证数字参数
+     */
+    validateNumber(value, fieldName, min = 1, max = 100) {
+        const num = parseInt(value);
+        if (isNaN(num) || num < min || num > max) {
+            throw new Error(`${fieldName}必须是${min}-${max}之间的数字`);
+        }
+        return num;
+    }
+};
+
+// HTML解析工具
+const HtmlParser = {
+    /**
+     * 解析视频列表元素
+     */
+    parseVideoElements($, selector = '.videoblock') {
+        const elements = $(selector);
+        console.log(`使用选择器: ${selector}，找到 ${elements.length} 个视频元素`);
+        return elements;
+    },
+    
+    /**
+     * 提取视频信息
+     */
+    extractVideoInfo($element) {
+        const titleElement = $element.find('.title a, .phimage a');
+        const title = this.cleanText(titleElement.attr('title') || titleElement.text());
+        const viewUrl = titleElement.attr('href');
+        
+        // 获取封面图片
+        const imgElement = $element.find('img');
+        const coverUrl = imgElement.attr('data-src') || 
+                         imgElement.attr('src') || 
+                         imgElement.attr('data-mediumthumb') || 
+                         imgElement.attr('data-thumb_url') || "";
+        
+        // 获取其他信息
+        const duration = this.cleanText($element.find('.duration').text());
+        const rating = this.cleanText($element.find('.rating-container .percent, .percent').text());
+        const views = this.cleanText($element.find('.views').text());
+        
+        return {
+            title,
+            viewUrl,
+            coverUrl,
+            duration,
+            rating,
+            views
+        };
+    },
+    
+    /**
+     * 清理文本内容
+     */
+    cleanText(text) {
+        return text ? text.trim().replace(/\s+/g, ' ') : "";
+    }
+};
+
+// URL工具
+const UrlUtils = {
+    /**
+     * 提取视频ID
+     */
+    extractVideoId(url) {
+        if (!url) return null;
+        
+        // 匹配 viewkey 参数
+        const viewKeyMatch = url.match(/viewkey=([^&]+)/);
+        if (viewKeyMatch) {
+            return viewKeyMatch[1];
+        }
+        
+        // 匹配路径中的ID
+        const pathMatch = url.match(/\/video\/([^\/\?]+)/);
+        if (pathMatch) {
+            return pathMatch[1];
+        }
+        
+        // 默认处理
+        return url.split('/').pop().split('?')[0];
+    },
+    
+    /**
+     * 构建完整URL
+     */
+    buildFullUrl(baseUrl, path) {
+        if (!path) return "";
+        if (path.startsWith('http')) return path;
+        
+        const cleanBase = baseUrl.replace(/\/$/, '');
+        const cleanPath = path.startsWith('/') ? path : `/${path}`;
+        return `${cleanBase}${cleanPath}`;
+    },
+    
+    /**
+     * 构建分页URL
+     */
+    buildPageUrl(baseUrl, page) {
+        const separator = baseUrl.includes('?') ? '&' : '?';
+        return `${baseUrl}${separator}page=${page}`;
+    }
+};
+
+// 时长解析工具
+const DurationParser = {
+    /**
+     * 解析时长文本为秒数
+     */
+    parseToSeconds(durationText) {
+        if (!durationText) return 0;
+        
+        const cleanText = durationText.trim();
+        const parts = cleanText.split(':');
+        
+        try {
+            if (parts.length === 2) {
+                // MM:SS 格式
+                const minutes = parseInt(parts[0]) || 0;
+                const seconds = parseInt(parts[1]) || 0;
+                return minutes * 60 + seconds;
+            } else if (parts.length === 3) {
+                // HH:MM:SS 格式
+                const hours = parseInt(parts[0]) || 0;
+                const minutes = parseInt(parts[1]) || 0;
+                const seconds = parseInt(parts[2]) || 0;
+                return hours * 3600 + minutes * 60 + seconds;
+            }
+        } catch (error) {
+            console.warn(`解析时长失败: ${durationText}`, error);
+        }
+        
+        return 0;
+    }
+};
+
+// 视频格式选择器
+const FormatSelector = {
+    /**
+     * 选择最佳视频格式
+     */
+    selectBestFormat(formats) {
+        if (!formats || formats.length === 0) {
+            return null;
+        }
+        
+        console.log(`可用格式数量: ${formats.length}`);
+        formats.forEach((format, index) => {
+            console.log(`格式 ${index + 1}: ${format.format} - ${format.url ? '有效' : '无效'}`);
+        });
+        
+        // 优先级列表
+        const preferredFormats = ["1080p", "720p", "480p", "360p"];
+        
+        // 按优先级查找
+        for (const preferred of preferredFormats) {
+            const found = formats.find(f => 
+                f.format && 
+                f.url && 
+                f.format.toLowerCase().includes(preferred.toLowerCase())
+            );
+            if (found) {
+                console.log(`选择格式: ${found.format}`);
+                return found;
+            }
+        }
+        
+        // 如果没有匹配的优先格式，选择第一个有效的
+        const firstValid = formats.find(f => f.url);
+        if (firstValid) {
+            console.log(`使用第一个有效格式: ${firstValid.format}`);
+            return firstValid;
+        }
+        
+        console.warn("未找到任何有效的视频格式");
+        return null;
+    }
+};
+
+/**
+ * 获取收藏视频列表
+ */
 async function getFavoriteVideos(params = {}) {
-  try {
-      // 参数验证
-      const page = parseInt(params.page) || 1;
-      const count = parseInt(params.count) || 20;
-      const apiUrl = params.apiUrl || "https://your-api-domain.com/get_video_links";
-      const favoriteUrl = params.favoriteUrl || "输入你的收藏列表地址";
-      
-      // 保存API地址到全局变量
-      globalConfig.apiUrl = apiUrl;
-      
-      // 验证必要参数
-      if (!favoriteUrl || favoriteUrl === "输入你的收藏列表地址") {
-          throw new Error("请设置收藏列表地址");
-      }
-      
-      console.log(`获取第 ${page} 页，每页 ${count} 个视频`);
-      console.log(`收藏列表地址: ${favoriteUrl}`);
-      console.log(`API接口地址: ${apiUrl}`);
-      
-      // 构建请求URL
-      const listUrl = favoriteUrl.includes('?') 
-          ? `${favoriteUrl}&page=${page}` 
-          : `${favoriteUrl}?page=${page}`;
-      
-      // 发送请求获取视频列表
-      const response = await Widget.http.get(listUrl, {
-          headers: {
-              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-              "Referer": favoriteUrl
-          }
-      });
-      
-      // 解析HTML内容
-      const $ = Widget.html.load(response.data);
-      const videoItems = [];
-      
-      console.log("开始解析HTML内容");
-      
-      // 解析视频列表 (使用pornhub的实际选择器)
-      const videoElements = $('.videoblock');
-      console.log(`使用选择器:.videoblock，找到 ${videoElements.length} 个元素`);
-      
-      for (let i = 0; i < videoElements.length && videoItems.length < count; i++) {
-          const element = videoElements[i];
-          const $element = $(element);
-          
-          // 提取视频信息
-          const titleElement = $element.find('.title a, .phimage a');
-          const title = titleElement.attr('title') || titleElement.text().trim();
-          const viewUrl = titleElement.attr('href');
-          const coverUrl = $element.find('img').attr('data-src') || $element.find('img').attr('src');
-          const duration = $element.find('.duration').text().trim();
-          const rating = $element.find('.rating-container .percent').text().trim();
-          
-          console.log(`视频 ${i + 1}: 标题="${title}", URL="https://cn.pornhub.com${viewUrl}"`);
-          
-          if (title && viewUrl) {
-              // 提取viewkey
-              const viewKeyMatch = viewUrl.match(/viewkey=([^&]+)/);
-              const videoId = viewKeyMatch ? viewKeyMatch[1] : extractVideoId(viewUrl);
-              
-              // 构建完整URL
-              const fullUrl = viewUrl.startsWith('http') ? viewUrl : `https://cn.pornhub.com${viewUrl}`;
-              
-              videoItems.push({
-                  id: videoId,
-                  type: "url",
-                  title: title,
-                  posterPath: coverUrl || "",
-                  backdropPath: coverUrl || "",
-                  releaseDate: "",
-                  mediaType: "movie",
-                  rating: rating || "",
-                  genreTitle: "视频",
-                  duration: parseDuration(duration),
-                  durationText: duration || "",
-                  previewUrl: "",
-                  videoUrl: fullUrl, // 先设置页面URL，loadDetail会替换为播放地址
-                  link: fullUrl,
-                  description: title
-              });
-          }
-      }
-      
-      console.log(`成功获取 ${videoItems.length} 个视频`);
-      return videoItems;
-      
-  } catch (error) {
-      console.error("获取视频列表失败:", error);
-      throw new Error(`获取视频列表失败: ${error.message}`);
-  }
+    try {
+        console.log("=== 开始获取收藏视频列表 ===");
+        console.log("输入参数:", params);
+        
+        // 参数验证和处理
+        ParamValidator.validateRequired(params, ['favoriteUrl']);
+        
+        const favoriteUrl = ParamValidator.validateUrl(params.favoriteUrl, "收藏列表地址");
+        const apiUrl = ParamValidator.validateUrl(params.apiUrl || GlobalConfig.apiUrl, "API地址");
+        const page = ParamValidator.validateNumber(params.page, "页码", 1, 999);
+        const count = ParamValidator.validateNumber(params.count, "每页数量", 1, 50);
+        
+        // 更新全局配置
+        GlobalConfig.updateApiUrl(apiUrl);
+        
+        console.log(`收藏列表地址: ${favoriteUrl}`);
+        console.log(`API接口地址: ${apiUrl}`);
+        console.log(`页码: ${page}, 每页数量: ${count}`);
+        
+        // 构建请求URL
+        const listUrl = UrlUtils.buildPageUrl(favoriteUrl, page);
+        console.log(`请求URL: ${listUrl}`);
+        
+        // 发送HTTP请求
+        const response = await Widget.http.get(listUrl, {
+            headers: {
+                ...GlobalConfig.defaultHeaders,
+                "Referer": favoriteUrl
+            }
+        });
+        
+        if (!response.data) {
+            throw new Error("服务器返回空数据");
+        }
+        
+        console.log(`HTML内容长度: ${response.data.length} 字符`);
+        
+        // 解析HTML内容
+        const $ = Widget.html.load(response.data);
+        const videoItems = [];
+        
+        // 获取视频元素
+        const videoElements = HtmlParser.parseVideoElements($);
+        
+        if (videoElements.length === 0) {
+            console.warn("未找到任何视频元素，可能需要调整选择器");
+            return [];
+        }
+        
+        // 解析视频信息
+        for (let i = 0; i < videoElements.length && videoItems.length < count; i++) {
+            try {
+                const $element = $(videoElements[i]);
+                const videoInfo = HtmlParser.extractVideoInfo($element);
+                
+                if (!videoInfo.title || !videoInfo.viewUrl) {
+                    console.warn(`视频 ${i + 1}: 缺少必要信息，跳过`);
+                    continue;
+                }
+                
+                // 提取视频ID
+                const videoId = UrlUtils.extractVideoId(videoInfo.viewUrl);
+                if (!videoId) {
+                    console.warn(`视频 ${i + 1}: 无法提取视频ID，跳过`);
+                    continue;
+                }
+                
+                // 构建完整URL
+                const fullUrl = UrlUtils.buildFullUrl("https://cn.pornhub.com", videoInfo.viewUrl);
+                
+                console.log(`视频 ${i + 1}: "${videoInfo.title}" - ${videoId}`);
+                
+                // 创建视频项
+                const videoItem = {
+                    id: videoId,
+                    type: "url",
+                    title: videoInfo.title,
+                    posterPath: videoInfo.coverUrl,
+                    backdropPath: videoInfo.coverUrl,
+                    releaseDate: "",
+                    mediaType: "movie",
+                    rating: videoInfo.rating,
+                    genreTitle: "收藏视频",
+                    duration: DurationParser.parseToSeconds(videoInfo.duration),
+                    durationText: videoInfo.duration,
+                    previewUrl: "",
+                    videoUrl: fullUrl, // 页面URL，loadDetail会获取实际播放地址
+                    link: fullUrl,
+                    description: videoInfo.title
+                };
+                
+                videoItems.push(videoItem);
+                
+            } catch (itemError) {
+                console.error(`解析视频 ${i + 1} 时出错:`, itemError);
+                continue;
+            }
+        }
+        
+        console.log(`=== 成功获取 ${videoItems.length} 个视频 ===`);
+        return videoItems;
+        
+    } catch (error) {
+        console.error("获取收藏视频列表失败:", error);
+        throw new Error(`获取收藏视频列表失败: ${error.message}`);
+    }
 }
 
-// 加载视频详情和播放地址
+/**
+ * 加载视频详情和播放地址
+ */
 async function loadDetail(link) {
-  try {
-      console.log(`加载视频详情: ${link}`);
-      
-      // 使用全局配置中的API地址
-      const apiUrl = globalConfig.apiUrl;
-      
-      // 提取viewkey
-      const viewKeyMatch = link.match(/viewkey=([^&]+)/);
-      if (!viewKeyMatch) {
-          throw new Error("无法提取视频ID");
-      }
-      
-      const viewKey = viewKeyMatch[1];
-      console.log(`使用API地址: ${apiUrl}`);
-      console.log(`视频ID: ${viewKey}`);
-      
-      // 调用后端API获取视频播放地址
-      const response = await Widget.http.post(apiUrl, {
-          headers: {
-              "Content-Type": "application/json",
-              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-          },
-          body: JSON.stringify({
-              url: link
-          })
-      });
-      
-      let data;
-      try {
-          data = JSON.parse(response.data);
-      } catch (parseError) {
-          console.error("解析API响应失败:", parseError);
-          console.log("原始响应:", response.data);
-          throw new Error("API响应格式错误");
-      }
-      
-      if (data.error) {
-          throw new Error(data.error);
-      }
-      
-      // 处理返回的视频链接
-      const formats = data.result || [];
-      console.log(`获取到 ${formats.length} 个格式:`, formats);
-      
-      if (formats.length === 0) {
-          throw new Error("API未返回任何视频格式");
-      }
-      
-      let selectedFormat = null;
-      
-      // 优先选择高清格式
-      const preferredFormats = ["1080p", "720p", "480p"];
-      for (const format of preferredFormats) {
-          const found = formats.find(f => f.format && f.format.includes(format));
-          if (found && found.url) {
-              selectedFormat = found;
-              console.log(`选择格式: ${found.format}`);
-              break;
-          }
-      }
-      
-      // 如果没有找到首选格式，使用第一个可用的
-      if (!selectedFormat && formats.length > 0) {
-          selectedFormat = formats[0];
-          console.log(`使用默认格式: ${selectedFormat.format}`);
-      }
-      
-      if (!selectedFormat || !selectedFormat.url) {
-          throw new Error("未找到可播放的视频地址");
-      }
-      
-      const videoUrl = selectedFormat.url;
-      console.log(`最终视频地址: ${videoUrl}`);
-
-      // 返回完整的视频信息
-      return {
-          success: true,
-          videoUrl: videoUrl,
-          formats: formats,
-          selectedFormat: selectedFormat.format,
-          // 添加播放器可能需要的额外信息
-          headers: {
-              "Referer": "https://cn.pornhub.com/",
-              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-          }
-      };
-      
-  } catch (error) {
-      console.error("加载视频详情失败:", error);
-      return {
-          success: false,
-          error: error.message,
-          videoUrl: "",
-          formats: []
-      };
-  }
-}
-
-// 辅助函数：提取视频ID
-function extractVideoId(url) {
-  // 根据实际URL结构调整
-  const matches = url.match(/\/video\/([^\/\?]+)/);
-  return matches ? matches[1] : url.split('/').pop().split('?')[0];
-}
-
-// 辅助函数：解析时长
-function parseDuration(durationText) {
-  if (!durationText) return 0;
-  
-  const parts = durationText.split(':');
-  if (parts.length === 2) {
-      const minutes = parseInt(parts[0]) || 0;
-      const seconds = parseInt(parts[1]) || 0;
-      return minutes * 60 + seconds;
-  } else if (parts.length === 3) {
-      const hours = parseInt(parts[0]) || 0;
-      const minutes = parseInt(parts[1]) || 0;
-      const seconds = parseInt(parts[2]) || 0;
-      return hours * 3600 + minutes * 60 + seconds;
-  }
-  
-  return 0;
-}
-
-// 搜索功能
-async function search(params = {}) {
-  try {
-      const keyword = params.keyword || "";
-      const page = parseInt(params.page) || 1;
-      const searchUrl = params.searchUrl || "输入搜索页面地址";
-      
-      if (!keyword) {
-          throw new Error("搜索关键词不能为空");
-      }
-      
-      if (!searchUrl || searchUrl === "输入搜索页面地址") {
-          throw new Error("请设置搜索页面地址");
-      }
-      
-      console.log(`搜索关键词: ${keyword}, 页码: ${page}`);
-      console.log(`搜索地址: ${searchUrl}`);
-      
-      // 构建搜索URL
-      const finalSearchUrl = searchUrl.includes('?') 
-          ? `${searchUrl}&q=${encodeURIComponent(keyword)}&page=${page}`
-          : `${searchUrl}?q=${encodeURIComponent(keyword)}&page=${page}`;
-      
-      const response = await Widget.http.get(finalSearchUrl, {
-          headers: {
-              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-              "Referer": searchUrl
-          }
-      });
-      
-      // 解析搜索结果 (使用与getFavoriteVideos相同的逻辑)
-      const $ = Widget.html.load(response.data);
-      const searchResults = [];
-      
-      // 解析视频列表 (使用pornhub的实际选择器)
-      $('.videoblock').each((index, element) => {
-          const $element = $(element);
-          
-          // 提取视频信息
-          const titleElement = $element.find('.title a, .phimage a');
-          const title = titleElement.attr('title') || titleElement.text().trim();
-          const viewUrl = titleElement.attr('href');
-          const coverUrl = $element.find('img').attr('data-src') || $element.find('img').attr('src');
-          const duration = $element.find('.duration').text().trim();
-          const rating = $element.find('.rating-container .percent').text().trim();
-          
-          if (title && viewUrl) {
-              // 提取viewkey
-              const viewKeyMatch = viewUrl.match(/viewkey=([^&]+)/);
-              const videoId = viewKeyMatch ? viewKeyMatch[1] : extractVideoId(viewUrl);
-              
-              // 构建完整URL
-              const fullUrl = viewUrl.startsWith('http') ? viewUrl : `https://cn.pornhub.com${viewUrl}`;
-              
-              searchResults.push({
-                  id: videoId,
-                  type: "url",
-                  title: title,
-                  posterPath: coverUrl || "",
-                  backdropPath: coverUrl || "",
-                  releaseDate: "",
-                  mediaType: "movie",
-                  rating: rating || "",
-                  genreTitle: "搜索结果",
-                  duration: parseDuration(duration),
-                  durationText: duration || "",
-                  previewUrl: "",
-                  videoUrl: fullUrl, // 先设置页面URL，loadDetail会替换为播放地址
-                  link: fullUrl,
-                  description: title
-              });
-          }
-      });
-      
-      console.log(`搜索到 ${searchResults.length} 个结果`);
-      return searchResults;
-      
-  } catch (error) {
-      console.error("搜索失败:", error);
-      throw new Error(`搜索失败: ${error.message}`);
-  }
+    try {
+        console.log("=== 开始加载视频详情 ===");
+        console.log(`视频链接: ${link}`);
+        
+        // 参数验证
+        if (!link) {
+            throw new Error("视频链接不能为空");
+        }
+        
+        // 提取视频ID
+        const videoId = UrlUtils.extractVideoId(link);
+        if (!videoId) {
+            throw new Error("无法从链接中提取视频ID");
+        }
+        
+        console.log(`视频ID: ${videoId}`);
+        console.log(`使用API地址: ${GlobalConfig.apiUrl}`);
+        
+        // 调用后端API获取视频播放地址
+        const response = await Widget.http.post(GlobalConfig.apiUrl, {
+            headers: {
+                "Content-Type": "application/json",
+                "User-Agent": GlobalConfig.defaultHeaders["User-Agent"]
+            },
+            body: JSON.stringify({
+                url: link
+            })
+        });
+        
+        if (!response.data) {
+            throw new Error("API返回空响应");
+        }
+        
+        // 解析JSON响应
+        let apiData;
+        try {
+            apiData = JSON.parse(response.data);
+        } catch (parseError) {
+            console.error("解析API响应失败:", parseError);
+            console.log("原始响应内容:", response.data);
+            throw new Error("API响应格式错误");
+        }
+        
+        // 检查API错误
+        if (apiData.error) {
+            throw new Error(`API错误: ${apiData.error}`);
+        }
+        
+        // 处理返回的视频格式
+        const formats = apiData.result || [];
+        console.log(`API返回 ${formats.length} 个视频格式`);
+        
+        if (formats.length === 0) {
+            throw new Error("API未返回任何视频格式");
+        }
+        
+        // 选择最佳格式
+        const selectedFormat = FormatSelector.selectBestFormat(formats);
+        if (!selectedFormat) {
+            throw new Error("未找到可用的视频格式");
+        }
+        
+        const videoUrl = selectedFormat.url;
+        console.log(`最终视频播放地址: ${videoUrl}`);
+        
+        // 返回详情信息
+        const result = {
+            success: true,
+            videoUrl: videoUrl,
+            formats: formats,
+            selectedFormat: selectedFormat.format,
+            headers: {
+                "Referer": "https://cn.pornhub.com/",
+                "User-Agent": GlobalConfig.defaultHeaders["User-Agent"]
+            }
+        };
+        
+        console.log("=== 视频详情加载成功 ===");
+        return result;
+        
+    } catch (error) {
+        console.error("加载视频详情失败:", error);
+        
+        // 返回错误信息
+        return {
+            success: false,
+            error: error.message,
+            videoUrl: "",
+            formats: []
+        };
+    }
 }
