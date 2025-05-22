@@ -4,7 +4,7 @@ var WidgetMetadata = {
     description: "获取用户收藏列表中的视频并在线观看",
     author: "pp",
     site: "https://example.com",
-    version: "1.0.3",
+    version: "1.0.6",
     requiredVersion: "0.0.1",
     modules: [
         {
@@ -171,7 +171,7 @@ async function getFavoritesList(params = {}) {
                     duration: duration,
                     durationText: durationText,
                     previewUrl: "",
-                    videoUrl: "", // 将通过 loadDetail 函数获取
+                    videoUrl: "", // 通过 loadDetail 获取
                     link: standardVideoUrl, // 使用标准格式的URL
                     description: `观看时长: ${durationText}`,
                     childItems: []
@@ -201,7 +201,7 @@ async function getFavoritesList(params = {}) {
     }
 }
 
-// 详情加载函数 - 获取视频播放地址
+// 详情加载函数 - 获取视频播放地址（参考Jable脚本）
 async function loadDetail(link) {
     console.log("开始加载视频详情:", link);
     
@@ -209,20 +209,13 @@ async function loadDetail(link) {
         let viewkey = extractViewkey(link);
         let videoUrl = link;
         
-        // 如果link就是viewkey，构造完整URL
+        // 确保使用正确的URL格式
         if (!link.includes('view_video.php') && viewkey) {
-            const domain = "https://cn.pornhub.com"; // 使用固定的标准域名
-            videoUrl = `${domain}/view_video.php?viewkey=${viewkey}`;
-            console.log("构造的完整视频URL:", videoUrl);
+            videoUrl = `https://cn.pornhub.com/view_video.php?viewkey=${viewkey}`;
         } else if (link.includes('view_video.php')) {
-            videoUrl = link;
             // 确保使用正确的域名
             if (!link.startsWith('https://cn.pornhub.com')) {
                 videoUrl = link.replace(/https?:\/\/[^\/]+/, 'https://cn.pornhub.com');
-                console.log("修正视频URL域名:", videoUrl);
-            }
-            if (!viewkey) {
-                viewkey = extractViewkey(link);
             }
         }
         
@@ -232,7 +225,7 @@ async function loadDetail(link) {
 
         console.log(`准备调用API获取视频直链 - viewkey: ${viewkey}, URL: ${videoUrl}`);
 
-        // 从参数中获取API地址，如果没有则使用默认值
+        // 调用API获取播放链接
         const apiUrl = globalApiUrl || "http://127.0.0.1:16813/get_mp4_links";
         
         const response = await Widget.http.post(apiUrl, {
@@ -280,10 +273,19 @@ async function loadDetail(link) {
 
         console.log(`选择视频格式: ${selectedFormat.format}, URL: ${selectedFormat.url}`);
 
-        return {
+        // 返回类似Jable脚本的格式
+        const item = {
+            id: link,
+            type: "detail",
             videoUrl: selectedFormat.url,
-            formats: formats // 返回所有格式供选择
+            customHeaders: {
+                "Referer": "https://cn.pornhub.com/",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+            }
         };
+
+        console.log("返回播放详情:", item);
+        return item;
 
     } catch (error) {
         console.error("加载视频详情失败:", error);
