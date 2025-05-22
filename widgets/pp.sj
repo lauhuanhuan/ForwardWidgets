@@ -26,7 +26,7 @@ var WidgetMetadata = {
           title: "收藏地址",
           type: "input",
           description: "你的 Pornhub 收藏页面地址",
-          value: "https://cn.pornhub.com/users/你的用户名/favorites"
+          value: "https://cn.pornhub.com/users/你的用户名/videos/favorites"
         }
       ]
     }
@@ -35,43 +35,58 @@ var WidgetMetadata = {
 
 async function fetchFavorites(params = {}) {
   try {
-    const url = params.favoritesUrl || "https://cn.pornhub.com/users/你的用户名/favorites";
+    const url = params.favoritesUrl;
+    if (!url || !url.includes("pornhub.com")) {
+      throw new Error("请输入有效的 Pornhub 收藏链接");
+    }
+
     Widget.logger.info("请求收藏页: " + url);
 
-    const res = await Widget.http.get(url, {
+    const response = await Widget.http.get(url, {
       headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+        "Referer": "https://cn.pornhub.com"
       }
     });
 
     Widget.logger.info("收藏页加载完成");
-    const $ = Widget.html.load(res.data);
-    const items = [];
 
-    $(".videoPreviewWrapper").each((i, el) => {
-      const title = $(el).find(".title a").text().trim();
-      const link = "https://cn.pornhub.com" + $(el).find(".title a").attr("href");
-      const posterPath = $(el).find("img[src]").attr("data-thumb_url") || $(el).find("img[src]").attr("src");
+    const $ = Widget.html.load(response.data);
+    const videoElements = $("ul.videos li.videoBox");
+
+    const videos = videoElements.map((i, el) => {
+      const element = $(el);
+      const title = element.find("span.title a").text().trim();
+      const href = element.find("a").attr("href");
+      if (!href) return null;
+
+      const link = "https://cn.pornhub.com" + href;
+      const posterPath = element.find("img").attr("data-thumb_url") || element.find("img").attr("src");
+      const durationText = element.find(".duration").text().trim();
       const viewkey = new URL(link).searchParams.get("viewkey");
 
       Widget.logger.debug(`已解析视频: ${title}, viewkey: ${viewkey}`);
 
-      items.push({
+      return {
         id: link,
         type: "url",
-        title: title,
-        posterPath: posterPath,
-        link: link,
-        videoUrl: async () => await getDirectVideoUrl(viewkey, params.apiUrl),
-        description: "点击加载直链播放"
-      });
-    });
+        title,
+        posterPath,
+        backdropPath: posterPath,
+        durationText,
+        mediaType: "movie",
+        genreTitle: "收藏",
+        link,
+        description: "点击跳转到 Pornhub 原始页面播放",
+        videoUrl: async () => await getDirectVideoUrl(viewkey, params.apiUrl)
+      };
+    }).get().filter(Boolean);
 
-    Widget.logger.info("调用成功，共获取视频数: " + items.length);
-    return items;
-  } catch (err) {
-    Widget.logger.error("获取收藏失败: " + err.message);
-    throw new Error("获取收藏失败: " + err.message);
+    Widget.logger.info("调用成功，共获取视频数: " + videos.length);
+    return videos;
+  } catch (error) {
+    Widget.logger.error("收藏加载失败: " + error.message);
+    throw error;
   }
 }
 
