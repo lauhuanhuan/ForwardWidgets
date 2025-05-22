@@ -4,7 +4,7 @@ var WidgetMetadata = {
     description: "获取用户收藏列表中的视频并在线观看",
     author: "pp",
     site: "https://example.com",
-    version: "1.0.0",
+    version: "1.0.1",
     requiredVersion: "0.0.1",
     loadDetail: loadDetail
     modules: [
