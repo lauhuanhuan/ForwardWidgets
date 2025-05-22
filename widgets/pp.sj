@@ -4,7 +4,7 @@ var WidgetMetadata = {
   description: "在线观看收藏列表",
   author: "pp",
   site: "https://cn.pornhub.com",
-  version: "1.0.6",
+  version: "1.0.7",
   requiredVersion: "0.0.1",
   modules: [
     {
@@ -32,6 +32,12 @@ var WidgetMetadata = {
     }
   ]
 };
+
+// 正则提取viewkey函数
+function getViewkeyFromUrl(url) {
+  const match = url.match(/[?&]viewkey=([^&]+)/);
+  return match ? match[1] : null;
+}
 
 async function fetchFavorites(params = {}) {
   try {
@@ -63,7 +69,9 @@ async function fetchFavorites(params = {}) {
       const link = "https://cn.pornhub.com" + href;
       const posterPath = element.find("img").attr("data-thumb_url") || element.find("img").attr("src");
       const durationText = element.find(".duration").text().trim();
-      const viewkey = new URL(link).searchParams.get("viewkey");
+
+      // 用正则提取viewkey，兼容无URL对象环境
+      const viewkey = getViewkeyFromUrl(link);
 
       console.log(`已解析视频: ${title}, viewkey: ${viewkey}`);
 
