@@ -4,7 +4,7 @@ var WidgetMetadata = {
     description: "获取用户收藏列表中的视频并在线观看",
     author: "pp",
     site: "https://example.com",
-    version: "1.0.0",
+    version: "1.0.1",
     requiredVersion: "0.0.1",
     modules: [
         {
@@ -95,7 +95,7 @@ async function getFavoritesList(params = {}) {
         const processedViewkeys = new Set();
         
         // 根据页面结构解析视频项目 - 使用更精确的选择器
-        $('.videoblock .phimage, .wrap .phimage, [class*="videoblock"] a[href*="viewkey"], [class*="video"] a[href*="viewkey"]').each(async (index, element) => {
+        $('.videoblock .phimage, .wrap .phimage, [class*="videoblock"] a[href*="viewkey"], [class*="video"] a[href*="viewkey"]').each((index, element) => {
             try {
                 const $element = $(element);
                 let $container = $element;
@@ -158,18 +158,6 @@ async function getFavoritesList(params = {}) {
                 const standardVideoUrl = `https://cn.pornhub.com/view_video.php?viewkey=${viewkey}`;
                 console.log(`构造标准视频URL: ${standardVideoUrl}`);
 
-                // 立即获取播放链接
-                let playableVideoUrl = '';
-                try {
-                    console.log(`开始获取视频播放链接: ${viewkey}`);
-                    const videoDetail = await getVideoPlayUrl(standardVideoUrl);
-                    playableVideoUrl = videoDetail.videoUrl;
-                    console.log(`成功获取播放链接: ${playableVideoUrl}`);
-                } catch (error) {
-                    console.error(`获取播放链接失败 (${viewkey}):`, error);
-                    // 如果获取失败，仍然添加项目但没有播放链接
-                }
-
                 const videoItem = {
                     id: viewkey,
                     type: "url",
@@ -183,23 +171,19 @@ async function getFavoritesList(params = {}) {
                     duration: duration,
                     durationText: durationText,
                     previewUrl: "",
-                    videoUrl: playableVideoUrl, // 直接设置播放URL
+                    videoUrl: "", // 通过 loadDetail 获取
                     link: standardVideoUrl, // 使用标准格式的URL
                     description: `观看时长: ${durationText}`,
                     childItems: []
                 };
 
                 videoItems.push(videoItem);
-                console.log(`解析视频项目成功: ${title} (${viewkey}) - 播放URL: ${playableVideoUrl ? '已获取' : '获取失败'}`);
+                console.log(`解析视频项目成功: ${title} (${viewkey}) - URL: ${standardVideoUrl}`);
                 
             } catch (error) {
                 console.error("解析单个视频项目时出错:", error);
             }
         });
-
-        // 等待所有异步操作完成
-        console.log(`等待所有视频项目解析完成...`);
-        await new Promise(resolve => setTimeout(resolve, 1000)); // 简单等待，实际中可能需要更复杂的同步机制
 
         console.log(`成功解析 ${videoItems.length} 个视频项目`);
 
@@ -217,11 +201,31 @@ async function getFavoritesList(params = {}) {
     }
 }
 
-// 获取视频播放URL的辅助函数
-async function getVideoPlayUrl(videoUrl) {
-    console.log("调用API获取播放链接:", videoUrl);
+// 详情加载函数 - 获取视频播放地址（参考Jable脚本）
+async function loadDetail(link) {
+    console.log("开始加载视频详情:", link);
     
     try {
+        let viewkey = extractViewkey(link);
+        let videoUrl = link;
+        
+        // 确保使用正确的URL格式
+        if (!link.includes('view_video.php') && viewkey) {
+            videoUrl = `https://cn.pornhub.com/view_video.php?viewkey=${viewkey}`;
+        } else if (link.includes('view_video.php')) {
+            // 确保使用正确的域名
+            if (!link.startsWith('https://cn.pornhub.com')) {
+                videoUrl = link.replace(/https?:\/\/[^\/]+/, 'https://cn.pornhub.com');
+            }
+        }
+        
+        if (!viewkey) {
+            throw new Error("无法从链接中提取viewkey");
+        }
+
+        console.log(`准备调用API获取视频直链 - viewkey: ${viewkey}, URL: ${videoUrl}`);
+
+        // 调用API获取播放链接
         const apiUrl = globalApiUrl || "http://127.0.0.1:16813/get_mp4_links";
         
         const response = await Widget.http.post(apiUrl, {
@@ -235,7 +239,8 @@ async function getVideoPlayUrl(videoUrl) {
         });
 
         console.log("API响应状态:", response.status);
-        
+        console.log("API响应内容:", response.data);
+
         let result;
         try {
             result = typeof response.data === 'string' ? JSON.parse(response.data) : response.data;
@@ -266,29 +271,24 @@ async function getVideoPlayUrl(videoUrl) {
             selectedFormat = formats[0]; // 如果没有找到偏好格式，使用第一个
         }
 
-        console.log(`API返回格式选择: ${selectedFormat.format}`);
+        console.log(`选择视频格式: ${selectedFormat.format}, URL: ${selectedFormat.url}`);
 
-        return {
+        // 返回类似Jable脚本的格式
+        const item = {
+            id: link,
+            type: "detail",
             videoUrl: selectedFormat.url,
-            formats: formats
+            customHeaders: {
+                "Referer": "https://cn.pornhub.com/",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+            }
         };
 
-    } catch (error) {
-        console.error("API调用失败:", error);
-        throw error;
-    }
-}
+        console.log("返回播放详情:", item);
+        return item;
 
-// 详情加载函数 - 现在主要用于兼容性，实际播放链接已在列表中获取
-async function loadDetail(link) {
-    console.log("loadDetail被调用:", link);
-    
-    // 如果之前已经获取了播放链接，可以直接返回
-    // 这里主要是为了保持兼容性
-    try {
-        return await getVideoPlayUrl(link);
     } catch (error) {
-        console.error("loadDetail失败:", error);
+        console.error("加载视频详情失败:", error);
         throw error;
     }
 }
@@ -335,73 +335,4 @@ function getFullUrl(path, baseUrl) {
 function parseDuration(durationText) {
     if (!durationText) return 0;
     
-    const match = durationText.match(/(\d+):(\d+)/);
-    if (match) {
-        return parseInt(match[1]) * 60 + parseInt(match[2]);
-    }
-    return 0;
-}
-
-// 辅助函数：解析评分
-function parseRating(ratingText) {
-    if (!ratingText) return "";
-    
-    const match = ratingText.match(/(\d+)%/);
-    if (match) {
-        return (parseInt(match[1]) / 20).toString(); // 转换为5分制
-    }
-    return "";
-}
-
-// 备用解析方法
-function tryAlternativeParsing($, favoritesUrl) {
-    console.log("尝试备用解析方法");
-    
-    const videoItems = [];
-    const processedViewkeys = new Set();
-    
-    // 尝试更通用的选择器
-    $('a[href*="viewkey"]').each((index, element) => {
-        try {
-            const $element = $(element);
-            const href = $element.attr('href');
-            const viewkey = extractViewkey(href);
-            
-            if (viewkey && !processedViewkeys.has(viewkey)) {
-                processedViewkeys.add(viewkey);
-                
-                const title = $element.text().trim() || $element.attr('title') || `视频 ${viewkey}`;
-                
-                // 构造标准URL - 使用固定域名
-                const standardVideoUrl = `https://cn.pornhub.com/view_video.php?viewkey=${viewkey}`;
-                console.log(`备用解析构造URL: ${standardVideoUrl}`);
-                
-                videoItems.push({
-                    id: viewkey,
-                    type: "url",
-                    title: title,
-                    posterPath: "",
-                    backdropPath: "",
-                    releaseDate: "",
-                    mediaType: "movie",
-                    rating: "",
-                    genreTitle: "收藏视频",
-                    duration: 0,
-                    durationText: "",
-                    previewUrl: "",
-                    videoUrl: "",
-                    link: standardVideoUrl,
-                    description: "通过备用方法解析",
-                    childItems: []
-                });
-                
-                console.log(`备用解析找到视频: ${title} (${viewkey}) - URL: ${standardVideoUrl}`);
-            }
-        } catch (error) {
-            console.error("备用解析单项失败:", error);
-        }
-    });
-    
-    console.log(`备用解析方法找到 ${videoItems.length} 个项目`);
-    return videoItems;
-}
+    const match = duration
