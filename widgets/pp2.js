@@ -4,7 +4,7 @@ var WidgetMetadata = {
     description: "在线播放收藏列表中的视频内容",
     author: "pp",
     site: "https://example.com",
-    version: "1.0.0",
+    version: "1.0.9",
     requiredVersion: "0.0.1",
     modules: [
         {
