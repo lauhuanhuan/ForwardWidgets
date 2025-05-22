@@ -6,13 +6,14 @@ var WidgetMetadata = {
     site: "https://example.com",
     version: "1.0.6",
     requiredVersion: "0.0.1",
-    // loadDetail: loadDetail,
     modules: [
         {
             title: "收藏列表",
             description: "获取用户收藏的视频列表",
             requiresWebView: false,
             functionName: "getFavoritesList",
+            loadDetailFunction: "loadDetail", // <== 添加这一行，绑定详情加载函数
+            supportsDetails: true, // <== 显示支持详情页
             sectionMode: false,
             params: [
                 {
