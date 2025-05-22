@@ -36,24 +36,25 @@ var WidgetMetadata = {
 async function fetchFavorites(params = {}) {
   try {
     const url = params.favoritesUrl || "https://cn.pornhub.com/users/你的用户名/favorites";
-    console.log("请求收藏页:", url);
+    Widget.logger.info("请求收藏页: " + url);
+
     const res = await Widget.http.get(url, {
       headers: {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
       }
     });
 
+    Widget.logger.info("收藏页加载完成");
     const $ = Widget.html.load(res.data);
-    console.log("收藏页加载完成");
-
     const items = [];
+
     $(".videoPreviewWrapper").each((i, el) => {
       const title = $(el).find(".title a").text().trim();
       const link = "https://cn.pornhub.com" + $(el).find(".title a").attr("href");
       const posterPath = $(el).find("img[src]").attr("data-thumb_url") || $(el).find("img[src]").attr("src");
       const viewkey = new URL(link).searchParams.get("viewkey");
 
-      console.log(`已解析视频: ${title}, viewkey: ${viewkey}`);
+      Widget.logger.debug(`已解析视频: ${title}, viewkey: ${viewkey}`);
 
       items.push({
         id: link,
@@ -66,9 +67,10 @@ async function fetchFavorites(params = {}) {
       });
     });
 
+    Widget.logger.info("调用成功，共获取视频数: " + items.length);
     return items;
   } catch (err) {
-    console.error("获取收藏失败", err);
+    Widget.logger.error("获取收藏失败: " + err.message);
     throw new Error("获取收藏失败: " + err.message);
   }
 }
@@ -76,11 +78,11 @@ async function fetchFavorites(params = {}) {
 async function getDirectVideoUrl(viewkey, apiUrl) {
   try {
     apiUrl = apiUrl || "https://你的接口地址";
-    const body = {
-      url: `https://www.pornhub.com/view_video.php?viewkey=${viewkey}`
-    };
+    const videoUrl = `https://www.pornhub.com/view_video.php?viewkey=${viewkey}`;
+    const body = { url: videoUrl };
 
-    console.log("调用直链接口, 请求体:", body);
+    Widget.logger.debug("调用直链接口: " + apiUrl);
+    Widget.logger.debug("请求体: " + JSON.stringify(body));
 
     const res = await Widget.http.post(apiUrl, {
       headers: {
@@ -90,7 +92,7 @@ async function getDirectVideoUrl(viewkey, apiUrl) {
     });
 
     const data = res.data;
-    console.log("接口响应:", data);
+    Widget.logger.debug("接口响应: " + JSON.stringify(data));
 
     if (data.error) throw new Error(data.error);
 
@@ -99,19 +101,19 @@ async function getDirectVideoUrl(viewkey, apiUrl) {
     for (let p of preferred) {
       const found = resolutions.find(r => r.format.includes(p));
       if (found) {
-        console.log(`选中清晰度: ${p}, 链接:`, found.url);
+        Widget.logger.info(`选中清晰度 ${p}: ${found.url}`);
         return found.url;
       }
     }
 
     if (resolutions.length > 0) {
-      console.log("使用第一个可用链接:", resolutions[0].url);
+      Widget.logger.info("使用第一个可用链接: " + resolutions[0].url);
       return resolutions[0].url;
     }
 
     throw new Error("未找到可用视频链接");
   } catch (err) {
-    console.error("获取视频链接失败", err);
+    Widget.logger.error("获取视频链接失败: " + err.message);
     throw new Error("获取视频链接失败: " + err.message);
   }
 }
