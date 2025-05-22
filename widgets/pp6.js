@@ -4,7 +4,7 @@ var WidgetMetadata = {
     description: "获取用户收藏列表中的视频并在线观看",
     author: "pp",
     site: "https://example.com",
-    version: "1.0.8",
+    version: "1.0.9",
     requiredVersion: "0.0.1",
     modules: [
         {
@@ -12,6 +12,7 @@ var WidgetMetadata = {
             description: "获取用户收藏的视频列表",
             requiresWebView: false,
             functionName: "getFavoritesList",
+            detailFunction: "loadDetail",
             loadDetailFunction: "loadDetail", // <== 添加这一行，绑定详情加载函数
             supportsDetails: true, // <== 显示支持详情页
             sectionMode: false,
