@@ -4,7 +4,7 @@ var WidgetMetadata = {
     description: "在线播放收藏列表中的视频内容",
     author: "pp",
     site: "https://example.com",
-    version: "1.1.0",
+    version: "1.1.1",
     requiredVersion: "0.0.1",
     modules: [
         {
@@ -366,15 +366,27 @@ const FormatSelector = {
 async function getFavoriteVideos(params = {}) {
     try {
         console.log("=== 开始获取收藏视频列表 ===");
-        console.log("输入参数:", params);
+        console.log("原始输入参数:", JSON.stringify(params, null, 2));
         
         // 参数验证和处理
         ParamValidator.validateRequired(params, ['favoriteUrl']);
         
         const favoriteUrl = ParamValidator.validateUrl(params.favoriteUrl, "收藏列表地址");
         const apiUrl = ParamValidator.validateUrl(params.apiUrl || GlobalConfig.apiUrl, "API地址");
-        const page = ParamValidator.validateNumber(params.page || 1, "页码", 1, 999);
-        const count = ParamValidator.validateNumber(params.count || 20, "每页数量", 1, 50);
+        
+        // 明确处理数字参数，确保默认值正确
+        let page = 1;
+        let count = 20;
+        
+        if (params.page) {
+            page = ParamValidator.validateNumber(params.page, "页码", 1, 999);
+        }
+        
+        if (params.count) {
+            count = ParamValidator.validateNumber(params.count, "每页数量", 1, 50);
+        }
+        
+        console.log(`处理后的参数 - 页码: ${page}, 每页数量: ${count}`);
         
         // 更新全局配置
         GlobalConfig.updateApiUrl(apiUrl);
@@ -414,34 +426,44 @@ async function getFavoriteVideos(params = {}) {
         }
         
         // 解析视频信息
-        for (let i = 0; i < videoElements.length && videoItems.length < count; i++) {
+        let processedCount = 0;
+        let successCount = 0;
+        
+        console.log(`开始处理 ${videoElements.length} 个视频元素，目标获取 ${count} 个视频`);
+        
+        for (let i = 0; i < videoElements.length; i++) {
+            if (successCount >= count) {
+                console.log(`已达到目标数量 ${count}，停止处理`);
+                break;
+            }
+            
+            processedCount++;
+            
             try {
                 const $element = $(videoElements[i]);
                 const videoInfo = HtmlParser.extractVideoInfo($element);
                 
-                console.log(`处理视频 ${i + 1}:`, {
-                    title: videoInfo.title,
-                    viewUrl: videoInfo.viewUrl,
+                console.log(`处理视频 ${i + 1}/${videoElements.length}:`, {
+                    title: videoInfo.title ? `"${videoInfo.title.substring(0, 50)}..."` : "无标题",
+                    viewUrl: videoInfo.viewUrl ? "有链接" : "无链接",
                     coverUrl: videoInfo.coverUrl ? '有封面' : '无封面',
-                    duration: videoInfo.duration
+                    duration: videoInfo.duration || "无时长"
                 });
                 
                 if (!videoInfo.title || !videoInfo.viewUrl) {
-                    console.warn(`视频 ${i + 1}: 缺少必要信息 - 标题: "${videoInfo.title}", URL: "${videoInfo.viewUrl}"`);
+                    console.warn(`视频 ${i + 1}: 跳过 - 标题: "${videoInfo.title}", URL: "${videoInfo.viewUrl}"`);
                     continue;
                 }
                 
                 // 提取视频ID
                 const videoId = UrlUtils.extractVideoId(videoInfo.viewUrl);
                 if (!videoId) {
-                    console.warn(`视频 ${i + 1}: 无法提取视频ID，URL: ${videoInfo.viewUrl}`);
+                    console.warn(`视频 ${i + 1}: 跳过 - 无法提取视频ID，URL: ${videoInfo.viewUrl}`);
                     continue;
                 }
                 
                 // 构建完整URL
                 const fullUrl = UrlUtils.buildFullUrl("https://cn.pornhub.com", videoInfo.viewUrl);
-                
-                console.log(`✓ 成功处理视频 ${i + 1}: "${videoInfo.title}" - ID: ${videoId}`);
                 
                 // 创建视频项
                 const videoItem = {
@@ -457,13 +479,16 @@ async function getFavoriteVideos(params = {}) {
                     duration: DurationParser.parseToSeconds(videoInfo.duration),
                     durationText: videoInfo.duration,
                     previewUrl: "",
-                    videoUrl: fullUrl, // 页面URL，loadDetail会获取实际播放地址
+                    videoUrl: fullUrl,
                     link: fullUrl,
                     description: videoInfo.title
                 };
                 
                 videoItems.push(videoItem);
-                console.log(`当前已获取视频数量: ${videoItems.length}/${count}`);
+                successCount++;
+                
+                console.log(`✓ 成功处理视频 ${i + 1}: "${videoInfo.title.substring(0, 30)}..." - ID: ${videoId}`);
+                console.log(`当前成功获取: ${successCount}/${count}`);
                 
             } catch (itemError) {
                 console.error(`解析视频 ${i + 1} 时出错:`, itemError);
@@ -471,6 +496,8 @@ async function getFavoriteVideos(params = {}) {
                 continue;
             }
         }
+        
+        console.log(`处理完成 - 总共处理: ${processedCount}, 成功获取: ${successCount}, 目标: ${count}`);
         
         console.log(`=== 成功获取 ${videoItems.length} 个视频 ===`);
         return videoItems;
