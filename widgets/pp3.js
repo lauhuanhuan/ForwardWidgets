@@ -4,7 +4,7 @@ var WidgetMetadata = {
     description: "获取用户收藏列表中的视频并在线观看",
     author: "pp",
     site: "https://example.com",
-    version: "1.0.2",
+    version: "1.0.3",
     requiredVersion: "0.0.1",
     modules: [
         {
@@ -154,9 +154,9 @@ async function getFavoritesList(params = {}) {
                 const ratingText = $container.find('.rating-container, .percent, [class*="rating"]').text().trim();
                 const rating = parseRating(ratingText);
 
-                // 构造标准的视频URL
-                const domain = getDomainFromUrl(favoritesUrl);
-                const standardVideoUrl = `${domain}/view_video.php?viewkey=${viewkey}`;
+                // 构造标准的视频URL - 使用固定域名避免解析问题
+                const standardVideoUrl = `https://cn.pornhub.com/view_video.php?viewkey=${viewkey}`;
+                console.log(`构造标准视频URL: ${standardVideoUrl}`);
 
                 const videoItem = {
                     id: viewkey,
@@ -211,16 +211,21 @@ async function loadDetail(link) {
         
         // 如果link就是viewkey，构造完整URL
         if (!link.includes('view_video.php') && viewkey) {
-            const domain = getDomainFromUrl("https://cn.pornhub.com"); // 使用标准域名
+            const domain = "https://cn.pornhub.com"; // 使用固定的标准域名
             videoUrl = `${domain}/view_video.php?viewkey=${viewkey}`;
             console.log("构造的完整视频URL:", videoUrl);
         } else if (link.includes('view_video.php')) {
             videoUrl = link;
+            // 确保使用正确的域名
+            if (!link.startsWith('https://cn.pornhub.com')) {
+                videoUrl = link.replace(/https?:\/\/[^\/]+/, 'https://cn.pornhub.com');
+                console.log("修正视频URL域名:", videoUrl);
+            }
             if (!viewkey) {
                 viewkey = extractViewkey(link);
             }
         }
-        console.log("pan测试:", videoUrl);
+        
         if (!viewkey) {
             throw new Error("无法从链接中提取viewkey");
         }
@@ -298,10 +303,20 @@ function extractViewkey(url) {
 function getDomainFromUrl(url) {
     try {
         const urlObj = new URL(url);
-        return `${urlObj.protocol}//${urlObj.host}`;
+        const domain = `${urlObj.protocol}//${urlObj.host}`;
+        console.log(`域名解析成功: ${url} -> ${domain}`);
+        return domain;
     } catch (error) {
         console.error("解析URL失败:", url, error);
-        return "https://example.com";
+        // 如果URL解析失败，尝试从字符串中提取域名
+        const match = url.match(/https?:\/\/[^\/]+/);
+        if (match) {
+            console.log(`通过正则表达式提取域名: ${match[0]}`);
+            return match[0];
+        }
+        // 默认返回pornhub域名
+        console.log("使用默认域名: https://cn.pornhub.com");
+        return "https://cn.pornhub.com";
     }
 }
 
@@ -355,9 +370,9 @@ function tryAlternativeParsing($, favoritesUrl) {
                 
                 const title = $element.text().trim() || $element.attr('title') || `视频 ${viewkey}`;
                 
-                // 构造标准URL
-                const domain = getDomainFromUrl(favoritesUrl);
-                const standardVideoUrl = `${domain}/view_video.php?viewkey=${viewkey}`;
+                // 构造标准URL - 使用固定域名
+                const standardVideoUrl = `https://cn.pornhub.com/view_video.php?viewkey=${viewkey}`;
+                console.log(`备用解析构造URL: ${standardVideoUrl}`);
                 
                 videoItems.push({
                     id: viewkey,
