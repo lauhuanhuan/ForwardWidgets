@@ -6,6 +6,7 @@ var WidgetMetadata = {
     site: "https://example.com",
     version: "1.0.0",
     requiredVersion: "0.0.1",
+    loadDetail: loadDetail
     modules: [
         {
             title: "收藏列表",
