@@ -220,7 +220,7 @@ async function loadDetail(link) {
                 viewkey = extractViewkey(link);
             }
         }
-        
+        console.log("pan测试:", videoUrl);
         if (!viewkey) {
             throw new Error("无法从链接中提取viewkey");
         }
