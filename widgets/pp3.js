@@ -4,7 +4,7 @@ var WidgetMetadata = {
     description: "获取用户收藏列表中的视频并在线观看",
     author: "pp",
     site: "https://example.com",
-    version: "1.0.0",
+    version: "1.0.1",
     requiredVersion: "0.0.1",
     modules: [
         {
@@ -52,6 +52,9 @@ var WidgetMetadata = {
     ]
 };
 
+// 全局变量存储API地址
+let globalApiUrl = "";
+
 // 获取收藏列表的主函数
 async function getFavoritesList(params = {}) {
     console.log("开始获取收藏列表，参数:", params);
@@ -66,10 +69,11 @@ async function getFavoritesList(params = {}) {
         }
 
         const favoritesUrl = params.favoritesUrl;
-        const apiUrl = params.apiUrl;
+        globalApiUrl = params.apiUrl; // 存储API地址供loadDetail使用
         const page = params.page || 1;
         
         console.log(`正在获取第${page}页收藏列表: ${favoritesUrl}`);
+        console.log(`API接口地址: ${globalApiUrl}`);
 
         // 2. 发送请求获取收藏列表页面
         const response = await Widget.http.get(favoritesUrl, {
@@ -87,28 +91,54 @@ async function getFavoritesList(params = {}) {
         const $ = Widget.html.load(response.data);
         const videoItems = [];
 
-        // 根据页面结构解析视频项目
-        $('.videoblock, .phimage, .wrap').each((index, element) => {
+        // 使用Set来避免重复的viewkey
+        const processedViewkeys = new Set();
+        
+        // 根据页面结构解析视频项目 - 使用更精确的选择器
+        $('.videoblock .phimage, .wrap .phimage, [class*="videoblock"] a[href*="viewkey"], [class*="video"] a[href*="viewkey"]').each((index, element) => {
             try {
                 const $element = $(element);
+                let $container = $element;
+                
+                // 如果当前元素是链接，找到其容器
+                if ($element.is('a')) {
+                    $container = $element.closest('.videoblock, .wrap, [class*="video"]');
+                    if ($container.length === 0) {
+                        $container = $element.parent();
+                    }
+                }
                 
                 // 获取视频链接和viewkey
-                const videoLink = $element.find('a').first().attr('href') || '';
+                let videoLink = '';
+                if ($element.is('a')) {
+                    videoLink = $element.attr('href') || '';
+                } else {
+                    videoLink = $element.find('a[href*="viewkey"]').first().attr('href') || '';
+                }
+                
                 const viewkey = extractViewkey(videoLink);
                 
                 if (!viewkey) {
                     console.log(`跳过无效的视频项目: ${videoLink}`);
                     return;
                 }
+                
+                // 检查是否已处理过此viewkey，避免重复
+                if (processedViewkeys.has(viewkey)) {
+                    console.log(`跳过重复的视频项目: ${viewkey}`);
+                    return;
+                }
+                processedViewkeys.add(viewkey);
 
-                // 获取标题
-                const title = $element.find('.title a, .phimage a').attr('title') || 
-                             $element.find('.title, .videoTitle').text().trim() ||
+                // 获取标题 - 更全面的选择器
+                const title = $container.find('.title a, .phimage a, a[href*="viewkey"]').attr('title') || 
+                             $container.find('.title, .videoTitle, [class*="title"]').text().trim() ||
+                             $element.attr('title') ||
                              `视频 ${viewkey}`;
 
                 // 获取封面图片
-                const coverImg = $element.find('img').first();
-                let coverUrl = coverImg.attr('src') || coverImg.attr('data-src') || '';
+                const coverImg = $container.find('img').first();
+                let coverUrl = coverImg.attr('src') || coverImg.attr('data-src') || coverImg.attr('data-thumb_url') || '';
                 
                 // 处理相对路径
                 if (coverUrl && !coverUrl.startsWith('http')) {
@@ -117,12 +147,16 @@ async function getFavoritesList(params = {}) {
                 }
 
                 // 获取时长
-                const durationText = $element.find('.duration, .video-duration').text().trim();
+                const durationText = $container.find('.duration, .video-duration, [class*="duration"]').text().trim();
                 const duration = parseDuration(durationText);
 
                 // 获取评分（如果有）
-                const ratingText = $element.find('.rating-container, .percent').text().trim();
+                const ratingText = $container.find('.rating-container, .percent, [class*="rating"]').text().trim();
                 const rating = parseRating(ratingText);
+
+                // 构造标准的视频URL
+                const domain = getDomainFromUrl(favoritesUrl);
+                const standardVideoUrl = `${domain}/view_video.php?viewkey=${viewkey}`;
 
                 const videoItem = {
                     id: viewkey,
@@ -138,13 +172,13 @@ async function getFavoritesList(params = {}) {
                     durationText: durationText,
                     previewUrl: "",
                     videoUrl: "", // 将通过 loadDetail 函数获取
-                    link: getFullUrl(videoLink, favoritesUrl),
+                    link: standardVideoUrl, // 使用标准格式的URL
                     description: `观看时长: ${durationText}`,
                     childItems: []
                 };
 
                 videoItems.push(videoItem);
-                console.log(`解析视频项目成功: ${title} (${viewkey})`);
+                console.log(`解析视频项目成功: ${title} (${viewkey}) - URL: ${standardVideoUrl}`);
                 
             } catch (error) {
                 console.error("解析单个视频项目时出错:", error);
@@ -172,17 +206,29 @@ async function loadDetail(link) {
     console.log("开始加载视频详情:", link);
     
     try {
-        const viewkey = extractViewkey(link);
+        let viewkey = extractViewkey(link);
+        let videoUrl = link;
+        
+        // 如果link就是viewkey，构造完整URL
+        if (!link.includes('view_video.php') && viewkey) {
+            const domain = getDomainFromUrl("https://cn.pornhub.com"); // 使用标准域名
+            videoUrl = `${domain}/view_video.php?viewkey=${viewkey}`;
+            console.log("构造的完整视频URL:", videoUrl);
+        } else if (link.includes('view_video.php')) {
+            videoUrl = link;
+            if (!viewkey) {
+                viewkey = extractViewkey(link);
+            }
+        }
+        
         if (!viewkey) {
             throw new Error("无法从链接中提取viewkey");
         }
 
-        // 构造完整的视频URL
-        const videoUrl = `https://example.com/view_video.php?viewkey=${viewkey}`;
-        console.log("构造的视频URL:", videoUrl);
+        console.log(`准备调用API获取视频直链 - viewkey: ${viewkey}, URL: ${videoUrl}`);
 
-        // 调用API获取视频直链
-        const apiUrl = "http://127.0.0.1:16813/get_mp4_links"; // 可以考虑从配置中获取
+        // 从参数中获取API地址，如果没有则使用默认值
+        const apiUrl = globalApiUrl || "http://127.0.0.1:16813/get_mp4_links";
         
         const response = await Widget.http.post(apiUrl, {
             headers: {
@@ -194,9 +240,16 @@ async function loadDetail(link) {
             })
         });
 
-        console.log("API响应:", response.data);
+        console.log("API响应状态:", response.status);
+        console.log("API响应内容:", response.data);
 
-        const result = JSON.parse(response.data);
+        let result;
+        try {
+            result = typeof response.data === 'string' ? JSON.parse(response.data) : response.data;
+        } catch (parseError) {
+            console.error("JSON解析失败:", parseError);
+            throw new Error(`API响应格式错误: ${response.data}`);
+        }
         
         if (result.error) {
             throw new Error(`API错误: ${result.error}`);
@@ -288,6 +341,7 @@ function tryAlternativeParsing($, favoritesUrl) {
     console.log("尝试备用解析方法");
     
     const videoItems = [];
+    const processedViewkeys = new Set();
     
     // 尝试更通用的选择器
     $('a[href*="viewkey"]').each((index, element) => {
@@ -296,8 +350,14 @@ function tryAlternativeParsing($, favoritesUrl) {
             const href = $element.attr('href');
             const viewkey = extractViewkey(href);
             
-            if (viewkey) {
+            if (viewkey && !processedViewkeys.has(viewkey)) {
+                processedViewkeys.add(viewkey);
+                
                 const title = $element.text().trim() || $element.attr('title') || `视频 ${viewkey}`;
+                
+                // 构造标准URL
+                const domain = getDomainFromUrl(favoritesUrl);
+                const standardVideoUrl = `${domain}/view_video.php?viewkey=${viewkey}`;
                 
                 videoItems.push({
                     id: viewkey,
@@ -313,10 +373,12 @@ function tryAlternativeParsing($, favoritesUrl) {
                     durationText: "",
                     previewUrl: "",
                     videoUrl: "",
-                    link: getFullUrl(href, favoritesUrl),
+                    link: standardVideoUrl,
                     description: "通过备用方法解析",
                     childItems: []
                 });
+                
+                console.log(`备用解析找到视频: ${title} (${viewkey}) - URL: ${standardVideoUrl}`);
             }
         } catch (error) {
             console.error("备用解析单项失败:", error);
