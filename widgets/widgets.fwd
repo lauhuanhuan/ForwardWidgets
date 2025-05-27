@@ -1,16 +1,16 @@
 {
-  "title": "pp widgets",
+  "title": "Forward Widgets",
   "description": "pp测试",
   "icon": "https://raw.githubusercontent.com/lauhuanhuan/ForwardWidgets/refs/heads/main/icon.png",
   "widgets": [
     {
-      "id": "favorites_viewer",
-      "title": "收藏列表观看器",
-      "description": "获取用户收藏列表中的视频并在线观看",
+      "id": "favorites",
+      "title": "Pornhub收藏列表",
+      "description": "获取Pornhub个人收藏列表中的视频",
       "requiredVersion": "0.0.1",
-      "version": "1.0.1",
+      "version": "1.0.0",
       "author": "pp",
-      "url": "https://raw.githubusercontent.com/lauhuanhuan/ForwardWidgets/refs/heads/main/widgets/pp10.js"
+      "url": "https://raw.githubusercontent.com/lauhuanhuan/ForwardWidgets/refs/heads/main/widgets/pp8.js"
     }
   ]
 }
