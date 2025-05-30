@@ -1,988 +1,855 @@
-// Pornhub直链解析 Surge模块
-// 作者: pp
-// 版本: 1.0.0
-// 日期: 2025-05-30
-// 描述: 本地解析Pornhub视频直链，解决IP验证问题
+from flask import Flask, request, jsonify, redirect, abort, Response
+import requests
+import re
+import json
+import hashlib
+import time
+import threading
+from urllib.parse import urljoin, urlparse, unquote, urlencode, parse_qs
+import base64
+import logging
+import os
 
-// 配置常量
-const CACHE_EXPIRY = 3600; // 缓存过期时间1小时
-const MAX_CACHE_SIZE = 100; // 最大缓存条目数
-const DEFAULT_HEADERS = {
-  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-  'Accept': '*/*',
-  'Accept-Language': 'en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7',
-  'Accept-Encoding': 'gzip, deflate, br',
-  'Origin': 'https://cn.pornhub.com',
-  'Referer': 'https://cn.pornhub.com/',
-  'Connection': 'keep-alive',
-  'Sec-Fetch-Dest': 'empty',
-  'Sec-Fetch-Mode': 'cors',
-  'Sec-Fetch-Site': 'cross-site',
-};
+# 配置日志
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger('pornhub_api')
 
-// 缓存键前缀
-const CACHE_KEYS = {
-  VIDEO: "ph_video_",
-  INFO: "ph_info_",
-  M3U8: "ph_m3u8_",
-  TS: "ph_ts_"
-};
+app = Flask(__name__)
 
-// 工具函数
-function log(message, type = "info") {
-  if (type === "error") {
-    console.error(`[PornhubAPI] ${message}`);
-  } else {
-    console.log(`[PornhubAPI] ${message}`);
-  }
+# 缓存配置
+video_cache = {}
+info_cache = {}
+m3u8_content_cache = {}  # m3u8内容缓存
+ts_cache = {}  # ts文件缓存
+CACHE_EXPIRY = 3600  # 缓存过期时间1小时
+MAX_CACHE_SIZE = 1000
+lock = threading.Lock()
+
+# 请求头配置
+DEFAULT_HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Accept': '*/*',
+    'Accept-Language': 'en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7',
+    'Accept-Encoding': 'gzip, deflate, br',
+    'Origin': 'https://www.pornhub.com',
+    'Referer': 'https://www.pornhub.com/',
+    'Connection': 'keep-alive',
+    'Sec-Fetch-Dest': 'empty',
+    'Sec-Fetch-Mode': 'cors',
+    'Sec-Fetch-Site': 'cross-site',
 }
 
-function makeId(url) {
-  // 简单的哈希函数，用于生成缓存ID
-  let hash = 0;
-  for (let i = 0; i < url.length; i++) {
-    const char = url.charCodeAt(i);
-    hash = ((hash << 5) - hash) + char;
-    hash = hash & hash; // 转换为32位整数
-  }
-  return Math.abs(hash).toString(16);
-}
 
-// 缓存管理
-function cacheSet(type, id, data) {
-  try {
-    const key = `${type}${id}`;
-    const cacheData = {
-      data: data,
-      timestamp: Date.now()
-    };
-    $persistentStore.write(JSON.stringify(cacheData), key);
-    return true;
-  } catch (e) {
-    log(`缓存设置失败: ${e.message}`, "error");
-    return false;
-  }
-}
+class PornHubParser:
+    def __init__(self):
+        self.session = requests.Session()
+        self.session.headers.update(DEFAULT_HEADERS)
 
-function cacheGet(type, id) {
-  try {
-    const key = `${type}${id}`;
-    const cacheJson = $persistentStore.read(key);
-    if (!cacheJson) return null;
+    def extract_viewkey(self, url):
+        """从URL中提取viewkey"""
+        match = re.search(r'viewkey=([a-zA-Z0-9]+)', url)
+        return match.group(1) if match else None
+
+    def parse_pornhub(self, url):
+        """PornHub 解析器 - 模仿youtube-dl的方法"""
+        try:
+            viewkey = self.extract_viewkey(url)
+            if not viewkey:
+                raise ValueError("Invalid PornHub URL: viewkey not found")
+
+            logger.info(f"Parsing viewkey: {viewkey}")
+
+            # 获取页面内容
+            response = self.session.get(url, timeout=15)
+            response.raise_for_status()
+            content = response.text
+
+            results = []
+
+            # 方法1: 查找所有可能的flashvars模式 (模仿youtube-dl)
+            flashvars_patterns = [
+                # 标准flashvars模式
+                r'var\s+flashvars_\d+\s*=\s*({.+?});',
+                r'var\s+flashvars[^=]*=\s*({.+?});',
+                r'flashvars_\d+\s*=\s*({.+?});',
+                r'flashvars\s*=\s*({.+?});',
+                # 更宽泛的模式
+                r'var\s+[a-zA-Z_]\w*\s*=\s*({[^}]*mediaDefinitions[^}]*});',
+                # 直接查找包含mediaDefinitions的对象
+                r'({[^{}]*"mediaDefinitions"[^{}]*(?:{[^{}]*}[^{}]*)*})',
+            ]
+
+            for i, pattern in enumerate(flashvars_patterns):
+                logger.debug(f"Trying pattern {i + 1}: {pattern[:50]}...")
+                matches = re.findall(pattern, content, re.DOTALL | re.IGNORECASE)
+
+                for match in matches:
+                    try:
+                        logger.debug(f"Found potential flashvars: {match[:200]}...")
+
+                        # 清理JavaScript代码
+                        flashvars_str = match.strip()
+
+                        # 移除注释
+                        flashvars_str = re.sub(r'//.*?$', '', flashvars_str, flags=re.MULTILINE)
+                        flashvars_str = re.sub(r'/\*.*?\*/', '', flashvars_str, flags=re.DOTALL)
+
+                        # 处理JavaScript字符串拼接
+                        flashvars_str = re.sub(r'"\s*\+\s*"', '', flashvars_str)
+                        flashvars_str = re.sub(r"'\s*\+\s*'", '', flashvars_str)
+
+                        # 尝试解析JSON
+                        flashvars = json.loads(flashvars_str)
+                        logger.debug(f"Successfully parsed flashvars: {list(flashvars.keys())}")
+
+                        # 查找 mediaDefinitions
+                        media_definitions = flashvars.get('mediaDefinitions', [])
+                        if media_definitions:
+                            logger.info(f"Found {len(media_definitions)} media definitions")
+
+                            for media in media_definitions:
+                                video_format = media.get('format', '')
+                                video_url = media.get('videoUrl', '')
+
+                                logger.debug(
+                                    f"Media format: {video_format}, URL: {video_url[:100] if video_url else 'None'}...")
+
+                                if video_format == 'hls' and video_url:
+                                    # 处理URL
+                                    if video_url.startswith('//'):
+                                        video_url = 'https:' + video_url
+                                    elif video_url.startswith('/'):
+                                        video_url = urljoin(url, video_url)
+
+                                    # 解码URL (可能是base64编码)
+                                    video_url = self._decode_video_url(video_url)
+
+                                    # 获取质量信息
+                                    quality_list = media.get('quality', [])
+                                    if isinstance(quality_list, list) and quality_list:
+                                        quality = quality_list[0]
+                                    elif isinstance(quality_list, str):
+                                        quality = quality_list
+                                    else:
+                                        quality = 'Unknown'
+
+                                    results.append({
+                                        'format': f"{quality}p" if str(quality).isdigit() else str(quality),
+                                        'ext': 'm3u8',
+                                        'url': video_url,
+                                        'type': 'hls',
+                                        'viewkey': viewkey,
+                                        'referer': url  # 保存原始页面URL作为referer
+                                    })
+                                    logger.info(f"Added result: {quality}p - {video_url[:100]}...")
+
+                        # 如果找到结果就跳出
+                        if results:
+                            break
+
+                    except (json.JSONDecodeError, KeyError, ValueError) as e:
+                        logger.warning(f"Failed to parse flashvars attempt: {e}")
+                        continue
+
+                # 如果找到结果就跳出
+                if results:
+                    break
+
+            # 方法2: 查找独立的mediaDefinitions (如果方法1失败)
+            if not results:
+                logger.info("Method 1 failed, trying method 2...")
+                media_patterns = [
+                    r'"mediaDefinitions":\s*(\[[^\]]+\])',
+                    r"'mediaDefinitions':\s*(\[[^\]]+\])",
+                    r'mediaDefinitions":\s*(\[[^\]]+\])',
+                    r'mediaDefinitions:\s*(\[[^\]]+\])',
+                ]
+
+                for pattern in media_patterns:
+                    matches = re.findall(pattern, content, re.DOTALL)
+                    for match in matches:
+                        try:
+                            logger.debug(f"Found mediaDefinitions: {match[:200]}...")
+                            media_data = json.loads(match)
+
+                            for item in media_data:
+                                if item.get('format') == 'hls' and item.get('videoUrl'):
+                                    video_url = item['videoUrl']
+                                    if video_url.startswith('//'):
+                                        video_url = 'https:' + video_url
+
+                                    video_url = self._decode_video_url(video_url)
+
+                                    quality = item.get('quality', ['Unknown'])
+                                    if isinstance(quality, list):
+                                        quality = quality[0] if quality else 'Unknown'
+
+                                    results.append({
+                                        'format': f"{quality}p" if str(quality).isdigit() else str(quality),
+                                        'ext': 'm3u8',
+                                        'url': video_url,
+                                        'type': 'hls',
+                                        'viewkey': viewkey,
+                                        'referer': url
+                                    })
+                            break
+                        except (json.JSONDecodeError, KeyError) as e:
+                            logger.warning(f"Failed to parse mediaDefinitions: {e}")
+                            continue
+
+                    if results:
+                        break
+
+            # 方法3: 查找video/get_media API调用
+            if not results:
+                logger.info("Method 2 failed, trying method 3...")
+                api_patterns = [
+                    r'"(/video/get_media\?[^"]*)"',
+                    r"'(/video/get_media\?[^']*)'",
+                    r'(/video/get_media\?[^\s&"\'<>]+)',
+                ]
+
+                for pattern in api_patterns:
+                    matches = re.findall(pattern, content)
+                    for api_url in matches:
+                        try:
+                            if not api_url.startswith('http'):
+                                api_url = urljoin(url, api_url)
+
+                            logger.info(f"Trying API URL: {api_url}")
+                            api_response = self.session.get(api_url, timeout=10)
+
+                            if api_response.status_code == 200:
+                                api_data = api_response.json()
+
+                                # 查找HLS链接
+                                for key, value in api_data.items():
+                                    if isinstance(value, list):
+                                        for item in value:
+                                            if isinstance(item, dict) and item.get('format') == 'hls':
+                                                video_url = item.get('videoUrl', '')
+                                                if video_url:
+                                                    video_url = self._decode_video_url(video_url)
+                                                    quality = item.get('quality', 'Unknown')
+
+                                                    results.append({
+                                                        'format': f"{quality}p" if str(quality).isdigit() else str(
+                                                            quality),
+                                                        'ext': 'm3u8',
+                                                        'url': video_url,
+                                                        'type': 'hls',
+                                                        'viewkey': viewkey,
+                                                        'referer': url
+                                                    })
+                                break
+                        except Exception as e:
+                            logger.warning(f"API call failed: {e}")
+                            continue
+
+                    if results:
+                        break
+
+            # 方法4: 直接搜索m3u8链接 (最后的尝试)
+            if not results:
+                logger.info("Method 3 failed, trying method 4...")
+                m3u8_patterns = [
+                    r'"(https?://[^"]*\.m3u8[^"]*)"',
+                    r"'(https?://[^']*\.m3u8[^']*)'",
+                    r'(https?://[^\s"\'<>]*\.m3u8[^\s"\'<>]*)',
+                ]
+
+                found_urls = set()
+                for pattern in m3u8_patterns:
+                    matches = re.findall(pattern, content, re.IGNORECASE)
+                    for match in matches:
+                        video_url = unquote(match)
+
+                        if video_url not in found_urls and ('pornhub' in video_url or 'phncdn' in video_url):
+                            found_urls.add(video_url)
+
+                            quality = self._extract_quality_from_url(video_url)
+
+                            results.append({
+                                'format': quality,
+                                'ext': 'm3u8',
+                                'url': video_url,
+                                'type': 'hls',
+                                'viewkey': viewkey,
+                                'referer': url
+                            })
+
+            logger.info(f"Total results found: {len(results)}")
+
+            # 按质量排序
+            if results:
+                results = self._sort_by_quality(results)
+
+            return results
+
+        except Exception as e:
+            logger.error(f"PornHub parser failed: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return []
+
+    def _decode_video_url(self, url):
+        """解码视频URL (处理可能的编码)"""
+        try:
+            # 检查是否是base64编码
+            if '=' in url and len(url) > 100:
+                try:
+                    decoded = base64.b64decode(url).decode('utf-8')
+                    if decoded.startswith('http'):
+                        return decoded
+                except:
+                    pass
+
+            # URL解码
+            return unquote(url)
+        except:
+            return url
+
+    def _extract_quality_from_url(self, url):
+        """从URL中提取质量信息"""
+        quality_patterns = [
+            r'(\d{3,4})p',
+            r'(\d{3,4})P',
+            r'_(\d{3,4})_',
+            r'/(\d{3,4})/',
+            r'quality=(\d{3,4})',
+            r'res=(\d{3,4})'
+        ]
+
+        for pattern in quality_patterns:
+            match = re.search(pattern, url)
+            if match:
+                return f"{match.group(1)}p"
+
+        return "Unknown"
+
+    def _sort_by_quality(self, results):
+        """按质量排序结果"""
+
+        def quality_key(item):
+            format_str = item.get('format', '0p')
+            if 'p' in format_str:
+                try:
+                    return int(re.search(r'(\d+)', format_str).group(1))
+                except:
+                    return 0
+            return 0
+
+        return sorted(results, key=quality_key, reverse=True)
+
+
+# 缓存管理函数
+def make_id(url):
+    return hashlib.sha256(url.encode()).hexdigest()
+
+
+def cache_set(id, video_url, referer=None):
+    """缓存视频URL和referer"""
+    with lock:
+        if len(video_cache) >= MAX_CACHE_SIZE:
+            oldest = min(video_cache.items(), key=lambda x: x[1]['timestamp'])[0]
+            del video_cache[oldest]
+        video_cache[id] = {
+            "url": video_url,
+            "referer": referer,
+            "timestamp": time.time()
+        }
+
+
+def cache_get(id):
+    """获取缓存的视频URL和referer"""
+    with lock:
+        entry = video_cache.get(id)
+        if not entry:
+            return None, None
+        if time.time() - entry["timestamp"] > CACHE_EXPIRY:
+            del video_cache[id]
+            return None, None
+        return entry["url"], entry.get("referer")
+
+
+def info_cache_set(key, data):
+    """缓存API响应信息"""
+    with lock:
+        if len(info_cache) >= MAX_CACHE_SIZE:
+            oldest = min(info_cache.items(), key=lambda x: x[1]['timestamp'])[0]
+            del info_cache[oldest]
+        info_cache[key] = {
+            "data": data,
+            "timestamp": time.time()
+        }
+
+
+def info_cache_get(key):
+    """获取缓存的API响应信息"""
+    with lock:
+        entry = info_cache.get(key)
+        if not entry:
+            return None
+        if time.time() - entry["timestamp"] > CACHE_EXPIRY:
+            del info_cache[key]
+            return None
+        return entry["data"]
+
+
+def m3u8_cache_set(id, content):
+    """缓存m3u8内容"""
+    with lock:
+        if len(m3u8_content_cache) >= MAX_CACHE_SIZE:
+            oldest = min(m3u8_content_cache.items(), key=lambda x: x[1]['timestamp'])[0]
+            del m3u8_content_cache[oldest]
+        m3u8_content_cache[id] = {
+            "content": content,
+            "timestamp": time.time()
+        }
+
+
+def m3u8_cache_get(id):
+    """获取缓存的m3u8内容"""
+    with lock:
+        entry = m3u8_content_cache.get(id)
+        if not entry:
+            return None
+        if time.time() - entry["timestamp"] > CACHE_EXPIRY:
+            del m3u8_content_cache[id]
+            return None
+        return entry["content"]
+
+
+def ts_cache_set(id, content):
+    """缓存ts文件内容"""
+    with lock:
+        if len(ts_cache) >= MAX_CACHE_SIZE * 10:  # ts文件可能很多，允许更大的缓存
+            # 删除最旧的10%缓存
+            sorted_items = sorted(ts_cache.items(), key=lambda x: x[1]['timestamp'])
+            for i in range(int(len(sorted_items) * 0.1)):
+                del ts_cache[sorted_items[i][0]]
+        
+        ts_cache[id] = {
+            "content": content,
+            "timestamp": time.time()
+        }
+
+
+def ts_cache_get(id):
+    """获取缓存的ts文件内容"""
+    with lock:
+        entry = ts_cache.get(id)
+        if not entry:
+            return None
+        if time.time() - entry["timestamp"] > CACHE_EXPIRY:
+            del ts_cache[id]
+            return None
+        return entry["content"]
+
+
+def cleanup_caches():
+    """清理所有缓存"""
+    with lock:
+        now = time.time()
+        # 清理视频URL缓存
+        expired_keys = [k for k, v in video_cache.items() if now - v["timestamp"] > CACHE_EXPIRY]
+        for k in expired_keys:
+            del video_cache[k]
+        
+        # 清理信息缓存
+        expired_keys = [k for k, v in info_cache.items() if now - v["timestamp"] > CACHE_EXPIRY]
+        for k in expired_keys:
+            del info_cache[k]
+        
+        # 清理m3u8内容缓存
+        expired_keys = [k for k, v in m3u8_content_cache.items() if now - v["timestamp"] > CACHE_EXPIRY]
+        for k in expired_keys:
+            del m3u8_content_cache[k]
+        
+        # 清理ts文件缓存
+        expired_keys = [k for k, v in ts_cache.items() if now - v["timestamp"] > CACHE_EXPIRY]
+        for k in expired_keys:
+            del ts_cache[k]
+        
+        logger.info(f"Cleaned up caches. Current sizes - video: {len(video_cache)}, info: {len(info_cache)}, m3u8: {len(m3u8_content_cache)}, ts: {len(ts_cache)}")
+
+
+def periodic_cleanup(interval=600):
+    """定期清理缓存的后台线程"""
+    while True:
+        time.sleep(interval)
+        cleanup_caches()
+
+
+def fix_m3u8_content(content, base_url, proxy_base_url):
+    """修复m3u8内容，将相对路径转换为代理URL"""
+    if not content or not base_url:
+        return content
     
-    const cache = JSON.parse(cacheJson);
-    if (Date.now() - cache.timestamp > CACHE_EXPIRY * 1000) {
-      // 缓存过期
-      return null;
-    }
-    return cache.data;
-  } catch (e) {
-    log(`缓存获取失败: ${e.message}`, "error");
-    return null;
-  }
-}
+    # 解析基础URL
+    parsed_base = urlparse(base_url)
+    base_scheme = parsed_base.scheme
+    base_netloc = parsed_base.netloc
+    
+    # 获取基础URL的路径部分（不包括最后的文件名）
+    base_path = '/'.join(parsed_base.path.split('/')[:-1]) + '/'
+    
+    # 获取查询参数
+    base_query = parsed_base.query
+    
+    # 按行处理m3u8内容
+    lines = content.split('\n')
+    result_lines = []
+    
+    for line in lines:
+        # 跳过注释和空行
+        if line.startswith('#') or not line.strip():
+            result_lines.append(line)
+            continue
+        
+        # 处理相对路径
+        if not line.startswith('http'):
+            # 检查是否包含查询参数
+            if '?' in line:
+                # 保留原始查询参数
+                path, query = line.split('?', 1)
+                # 构建绝对URL
+                absolute_url = f"{base_scheme}://{base_netloc}{base_path}{path}?{query}"
+            else:
+                # 没有查询参数，但需要保留原始URL的查询参数
+                absolute_url = f"{base_scheme}://{base_netloc}{base_path}{line}"
+                if base_query:
+                    absolute_url += f"?{base_query}"
+            
+            # 创建代理URL
+            ts_id = make_id(absolute_url)
+            proxy_url = f"{proxy_base_url}/ts/{ts_id}"
+            
+            # 缓存原始URL
+            cache_set(ts_id, absolute_url)
+            
+            result_lines.append(proxy_url)
+            logger.debug(f"Fixed relative path: {line} -> {proxy_url}")
+        else:
+            # 已经是绝对路径，也转换为代理URL
+            ts_id = make_id(line)
+            proxy_url = f"{proxy_base_url}/ts/{ts_id}"
+            
+            # 缓存原始URL
+            cache_set(ts_id, line)
+            
+            result_lines.append(proxy_url)
+            logger.debug(f"Proxied absolute path: {line} -> {proxy_url}")
+    
+    return '\n'.join(result_lines)
 
-// 清理过期缓存
-function cleanupCache() {
-  // 在Surge环境中，我们无法枚举所有存储的键
-  // 因此这个函数在Surge中实际上不会执行任何操作
-  log("缓存清理在Surge环境中不可用");
-}
 
-// PornHub解析器
-class PornHubParser {
-  constructor() {
-    this.headers = DEFAULT_HEADERS;
-  }
+def get_m3u8_content(url, referer=None):
+    """获取并修复m3u8内容"""
+    try:
+        # 准备请求头
+        headers = DEFAULT_HEADERS.copy()
+        if referer:
+            headers['Referer'] = referer
+        
+        response = requests.get(url, headers=headers, timeout=10)
+        if response.status_code != 200:
+            logger.warning(f"Failed to get m3u8 content, status code: {response.status_code}")
+            return None
+        
+        content = response.text
+        
+        # 检查是否是有效的m3u8内容
+        if not content.strip().startswith('#EXTM3U'):
+            logger.warning(f"Invalid m3u8 content: {content[:100]}...")
+            return None
+        
+        logger.info(f"Successfully got m3u8 content from {url}")
+        
+        return content
+    except Exception as e:
+        logger.error(f"Error getting m3u8 content: {e}")
+        return None
 
-  extractViewkey(url) {
-    const match = url.match(/viewkey=([a-zA-Z0-9]+)/);
-    return match ? match[1] : null;
-  }
 
-  async parsePornhub(url) {
-    try {
-      const viewkey = this.extractViewkey(url);
-      if (!viewkey) {
-        throw new Error("Invalid PornHub URL: viewkey not found");
-      }
+def get_ts_content(url, referer=None):
+    """获取ts文件内容"""
+    try:
+        # 准备请求头
+        headers = DEFAULT_HEADERS.copy()
+        if referer:
+            headers['Referer'] = referer
+        
+        response = requests.get(url, headers=headers, timeout=10)
+        if response.status_code != 200:
+            logger.warning(f"Failed to get ts content, status code: {response.status_code}")
+            return None
+        
+        # 检查内容类型
+        content_type = response.headers.get('Content-Type', '')
+        if not ('video' in content_type or 'octet-stream' in content_type or 'mpegurl' in content_type):
+            logger.warning(f"Unexpected content type for ts file: {content_type}")
+        
+        logger.info(f"Successfully got ts content from {url}, size: {len(response.content)} bytes")
+        
+        return response.content
+    except Exception as e:
+        logger.error(f"Error getting ts content: {e}")
+        return None
 
-      log(`解析视频 viewkey: ${viewkey}`);
 
-      // 获取页面内容
-      const response = await this.httpGet(url);
-      if (!response.body) {
-        throw new Error("Failed to get page content");
-      }
-      const content = response.body;
+# 启动后台清理线程
+threading.Thread(target=periodic_cleanup, daemon=True).start()
 
-      let results = [];
+# 初始化解析器
+parser = PornHubParser()
 
-      // 方法1: 查找所有可能的flashvars模式
-      const flashvarsPatterns = [
-        /var\s+flashvars_\d+\s*=\s*({.+?});/,
-        /var\s+flashvars[^=]*=\s*({.+?});/,
-        /flashvars_\d+\s*=\s*({.+?});/,
-        /flashvars\s*=\s*({.+?});/,
-        /var\s+[a-zA-Z_]\w*\s*=\s*({[^}]*mediaDefinitions[^}]*});/,
-        /({[^{}]*"mediaDefinitions"[^{}]*(?:{[^{}]*}[^{}]*)*})/
-      ];
 
-      for (const pattern of flashvarsPatterns) {
-        const matches = content.match(pattern);
-        if (matches && matches.length > 0) {
-          for (const match of matches) {
-            try {
-              // 清理JavaScript代码
-              let flashvarsStr = match.trim();
-              
-              // 移除注释
-              flashvarsStr = flashvarsStr.replace(/\/\/.*?$/gm, '');
-              flashvarsStr = flashvarsStr.replace(/\/\*.*?\*\//gs, '');
-              
-              // 处理JavaScript字符串拼接
-              flashvarsStr = flashvarsStr.replace(/"\s*\+\s*"/g, '');
-              flashvarsStr = flashvarsStr.replace(/'\s*\+\s*'/g, '');
-              
-              // 尝试解析JSON
-              const flashvars = JSON.parse(flashvarsStr);
-              
-              // 查找 mediaDefinitions
-              const mediaDefinitions = flashvars.mediaDefinitions || [];
-              if (mediaDefinitions.length > 0) {
-                log(`找到 ${mediaDefinitions.length} 个媒体定义`);
-                
-                for (const media of mediaDefinitions) {
-                  const videoFormat = media.format || '';
-                  const videoUrl = media.videoUrl || '';
-                  
-                  if (videoFormat === 'hls' && videoUrl) {
-                    // 处理URL
-                    let processedUrl = videoUrl;
-                    if (processedUrl.startsWith('//')) {
-                      processedUrl = 'https:' + processedUrl;
-                    } else if (processedUrl.startsWith('/')) {
-                      const urlObj = new URL(url);
-                      processedUrl = `${urlObj.protocol}//${urlObj.host}${processedUrl}`;
-                    }
-                    
-                    // 解码URL
-                    processedUrl = this.decodeVideoUrl(processedUrl);
-                    
-                    // 获取质量信息
-                    let quality = 'Unknown';
-                    const qualityList = media.quality;
-                    if (Array.isArray(qualityList) && qualityList.length > 0) {
-                      quality = qualityList[0];
-                    } else if (typeof qualityList === 'string') {
-                      quality = qualityList;
-                    }
-                    
-                    results.push({
-                      format: isNaN(quality) ? String(quality) : `${quality}p`,
-                      ext: 'm3u8',
-                      url: processedUrl,
-                      type: 'hls',
-                      viewkey: viewkey,
-                      referer: url
-                    });
-                    
-                    log(`添加结果: ${quality}p - ${processedUrl.substring(0, 100)}...`);
-                  }
-                }
-              }
-              
-              // 如果找到结果就跳出
-              if (results.length > 0) break;
-            } catch (e) {
-              log(`解析flashvars失败: ${e.message}`, "error");
-              continue;
+@app.route('/get_m3u8_links', methods=['POST'])
+def get_m3u8_links():
+    """获取M3U8链接(通过代理) - 兼容原接口名称"""
+    return get_mp4_links()
+
+
+@app.route('/get_mp4_links', methods=['POST'])
+def get_mp4_links():
+    """获取M3U8链接(通过代理) - 保持原接口名称兼容性"""
+    data = request.json
+    url = data.get('url')
+    if not url:
+        return jsonify({'error': 'Missing URL parameter'}), 400
+
+    # 验证是否为PornHub URL
+    if 'pornhub.com' not in url.lower():
+        return jsonify({'error': 'Only PornHub URLs are supported'}), 400
+
+    # 检查缓存
+    cached_result = info_cache_get(url)
+    if cached_result:
+        logger.info(f"Using cached result for {url}")
+        return jsonify({'result': cached_result})
+
+    try:
+        logger.info(f"Parsing URL: {url}")
+
+        # 解析视频链接
+        results = parser.parse_pornhub(url)
+
+        if not results:
+            return jsonify({'error': 'No M3U8 links found'}), 404
+
+        # 获取代理基础URL
+        proxy_base_url = "https://pornhubapi.8660105.xyz"
+        
+        # 为每个链接创建代理URL并预加载m3u8内容
+        proxy_results = []
+        for result in results:
+            video_url = result['url']
+            referer = result.get('referer', url)
+            id = make_id(video_url)
+            
+            # 缓存视频URL和referer
+            cache_set(id, video_url, referer)
+
+            # 预加载并修复m3u8内容
+            try:
+                m3u8_content = get_m3u8_content(video_url, referer)
+                if m3u8_content:
+                    # 修复m3u8内容，将相对路径转换为代理URL
+                    fixed_content = fix_m3u8_content(m3u8_content, video_url, proxy_base_url)
+                    m3u8_cache_set(id, fixed_content)
+                    logger.info(f"Preloaded and cached m3u8 content for {id}")
+            except Exception as e:
+                logger.warning(f"Failed to preload m3u8 content: {e}")
+
+            proxy_url = f"{proxy_base_url}/proxy/{id}"
+
+            proxy_results.append({
+                'format': result['format'],
+                'ext': result['ext'],
+                'url': proxy_url,
+                'type': result.get('type', 'hls'),
+                'viewkey': result.get('viewkey')
+            })
+
+        # 缓存结果
+        info_cache_set(url, proxy_results)
+
+        return jsonify({
+            'result': proxy_results,
+            'count': len(proxy_results),
+            'viewkey': results[0].get('viewkey') if results else None
+        })
+
+    except Exception as e:
+        logger.error(f"Error in get_mp4_links: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return jsonify({'error': f'Parsing failed: {str(e)}'}), 500
+
+
+@app.route('/get_direct_m3u8', methods=['POST'])
+def get_direct_m3u8():
+    """获取直接M3U8链接(不通过代理)"""
+    data = request.json
+    url = data.get('url')
+    if not url:
+        return jsonify({'error': 'Missing URL parameter'}), 400
+
+    # 验证是否为PornHub URL
+    if 'pornhub.com' not in url.lower():
+        return jsonify({'error': 'Only PornHub URLs are supported'}), 400
+
+    try:
+        logger.info(f"Getting direct M3U8 for: {url}")
+
+        # 解析视频链接
+        results = parser.parse_pornhub(url)
+
+        if not results:
+            return jsonify({'error': 'No M3U8 links found'}), 404
+
+        # 返回直接链接
+        direct_results = []
+        for result in results:
+            direct_results.append({
+                'format': result['format'],
+                'ext': result['ext'],
+                'url': result['url'],  # 直接返回原始URL
+                'type': result.get('type', 'hls'),
+                'viewkey': result.get('viewkey')
+            })
+
+        return jsonify({
+            'result': direct_results,
+            'count': len(direct_results),
+            'viewkey': results[0].get('viewkey') if results else None
+        })
+
+    except Exception as e:
+        logger.error(f"Error in get_direct_m3u8: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return jsonify({'error': f'Parsing failed: {str(e)}'}), 500
+
+
+@app.route('/proxy/<id>', methods=['GET'])
+def proxy_m3u8(id):
+    """代理M3U8内容，修复相对路径问题"""
+    # 从缓存获取原始URL和referer
+    original_url, referer = cache_get(id)
+    if not original_url:
+        return jsonify({'error': 'Invalid or expired proxy ID'}), 404
+
+    # 尝试从缓存获取已修复的m3u8内容
+    cached_content = m3u8_cache_get(id)
+    if cached_content:
+        logger.info(f"Serving cached m3u8 content for {id}")
+        return Response(
+            cached_content,
+            mimetype='application/vnd.apple.mpegurl',
+            headers={
+                'Access-Control-Allow-Origin': '*',
+                'Cache-Control': 'max-age=300'  # 5分钟缓存
             }
-          }
-        }
-        
-        // 如果找到结果就跳出
-        if (results.length > 0) break;
-      }
+        )
 
-      // 方法2: 查找独立的mediaDefinitions
-      if (results.length === 0) {
-        log("方法1失败，尝试方法2...");
-        const mediaPatterns = [
-          /"mediaDefinitions":\s*(\[[^\]]+\])/,
-          /'mediaDefinitions':\s*(\[[^\]]+\])/,
-          /mediaDefinitions":\s*(\[[^\]]+\])/,
-          /mediaDefinitions:\s*(\[[^\]]+\])/
-        ];
+    try:
+        # 获取m3u8内容
+        m3u8_content = get_m3u8_content(original_url, referer)
         
-        for (const pattern of mediaPatterns) {
-          const matches = content.match(pattern);
-          if (matches && matches.length > 1) {
-            try {
-              const mediaData = JSON.parse(matches[1]);
-              
-              for (const item of mediaData) {
-                if (item.format === 'hls' && item.videoUrl) {
-                  let videoUrl = item.videoUrl;
-                  if (videoUrl.startsWith('//')) {
-                    videoUrl = 'https:' + videoUrl;
-                  }
-                  
-                  videoUrl = this.decodeVideoUrl(videoUrl);
-                  
-                  let quality = item.quality;
-                  if (Array.isArray(quality)) {
-                    quality = quality.length > 0 ? quality[0] : 'Unknown';
-                  }
-                  
-                  results.push({
-                    format: isNaN(quality) ? String(quality) : `${quality}p`,
-                    ext: 'm3u8',
-                    url: videoUrl,
-                    type: 'hls',
-                    viewkey: viewkey,
-                    referer: url
-                  });
-                }
-              }
-              
-              if (results.length > 0) break;
-            } catch (e) {
-              log(`解析mediaDefinitions失败: ${e.message}`, "error");
-              continue;
+        if not m3u8_content:
+            logger.warning(f"Failed to get m3u8 content for {id}, falling back to redirect")
+            return redirect(original_url)
+        
+        # 获取代理基础URL
+        proxy_base_url = "https://pornhubapi.8660105.xyz"
+        
+        # 修复m3u8内容，将相对路径转换为代理URL
+        fixed_content = fix_m3u8_content(m3u8_content, original_url, proxy_base_url)
+        
+        # 缓存修复后的内容
+        m3u8_cache_set(id, fixed_content)
+        
+        # 返回修复后的m3u8内容
+        return Response(
+            fixed_content,
+            mimetype='application/vnd.apple.mpegurl',
+            headers={
+                'Access-Control-Allow-Origin': '*',
+                'Cache-Control': 'max-age=300'  # 5分钟缓存
             }
-          }
-        }
-      }
+        )
+    
+    except Exception as e:
+        logger.error(f"Error in proxy_m3u8: {e}")
+        # 出错时回退到重定向
+        return redirect(original_url)
 
-      // 方法3: 查找video/get_media API调用
-      if (results.length === 0) {
-        log("方法2失败，尝试方法3...");
-        const apiPatterns = [
-          /"(\/video\/get_media\?[^"]*)"/,
-          /'(\/video\/get_media\?[^']*)'/,
-          /(\/video\/get_media\?[^\s&"'<>]+)/
-        ];
-        
-        for (const pattern of apiPatterns) {
-          const matches = content.match(pattern);
-          if (matches && matches.length > 1) {
-            try {
-              let apiUrl = matches[1];
-              if (!apiUrl.startsWith('http')) {
-                const urlObj = new URL(url);
-                apiUrl = `${urlObj.protocol}//${urlObj.host}${apiUrl}`;
-              }
-              
-              log(`尝试API URL: ${apiUrl}`);
-              const apiResponse = await this.httpGet(apiUrl);
-              
-              if (apiResponse.status === 200 && apiResponse.body) {
-                const apiData = JSON.parse(apiResponse.body);
-                
-                // 查找HLS链接
-                for (const key in apiData) {
-                  if (Array.isArray(apiData[key])) {
-                    for (const item of apiData[key]) {
-                      if (typeof item === 'object' && item.format === 'hls') {
-                        const videoUrl = item.videoUrl || '';
-                        if (videoUrl) {
-                          const decodedUrl = this.decodeVideoUrl(videoUrl);
-                          const quality = item.quality || 'Unknown';
-                          
-                          results.push({
-                            format: isNaN(quality) ? String(quality) : `${quality}p`,
-                            ext: 'm3u8',
-                            url: decodedUrl,
-                            type: 'hls',
-                            viewkey: viewkey,
-                            referer: url
-                          });
-                        }
-                      }
-                    }
-                  }
-                }
-                
-                if (results.length > 0) break;
-              }
-            } catch (e) {
-              log(`API调用失败: ${e.message}`, "error");
-              continue;
+
+@app.route('/ts/<id>', methods=['GET'])
+def proxy_ts(id):
+    """代理TS文件，添加必要的请求头"""
+    # 从缓存获取原始URL和referer
+    original_url, referer = cache_get(id)
+    if not original_url:
+        return jsonify({'error': 'Invalid or expired proxy ID'}), 404
+
+    # 尝试从缓存获取ts内容
+    cached_content = ts_cache_get(id)
+    if cached_content:
+        logger.info(f"Serving cached ts content for {id}")
+        return Response(
+            cached_content,
+            mimetype='video/mp2t',
+            headers={
+                'Access-Control-Allow-Origin': '*',
+                'Cache-Control': 'max-age=3600'  # 1小时缓存
             }
-          }
-        }
-      }
+        )
 
-      // 方法4: 直接搜索m3u8链接
-      if (results.length === 0) {
-        log("方法3失败，尝试方法4...");
-        const m3u8Patterns = [
-          /"(https?:\/\/[^"]*\.m3u8[^"]*)"/,
-          /'(https?:\/\/[^']*\.m3u8[^']*)'/,
-          /(https?:\/\/[^\s"'<>]*\.m3u8[^\s"'<>]*)/
-        ];
+    try:
+        # 获取ts内容
+        ts_content = get_ts_content(original_url, referer)
         
-        const foundUrls = new Set();
-        for (const pattern of m3u8Patterns) {
-          const matches = content.match(new RegExp(pattern, 'gi'));
-          if (matches) {
-            for (const match of matches) {
-              // 提取URL部分
-              const urlMatch = match.match(/(https?:\/\/[^\s"'<>]*\.m3u8[^\s"'<>]*)/);
-              if (urlMatch) {
-                const videoUrl = decodeURIComponent(urlMatch[1]);
-                
-                if (!foundUrls.has(videoUrl) && (videoUrl.includes('pornhub') || videoUrl.includes('phncdn'))) {
-                  foundUrls.add(videoUrl);
-                  
-                  const quality = this.extractQualityFromUrl(videoUrl);
-                  
-                  results.push({
-                    format: quality,
-                    ext: 'm3u8',
-                    url: videoUrl,
-                    type: 'hls',
-                    viewkey: viewkey,
-                    referer: url
-                  });
-                }
-              }
+        if not ts_content:
+            logger.warning(f"Failed to get ts content for {id}, falling back to redirect")
+            return redirect(original_url)
+        
+        # 缓存ts内容
+        ts_cache_set(id, ts_content)
+        
+        # 返回ts内容
+        return Response(
+            ts_content,
+            mimetype='video/mp2t',
+            headers={
+                'Access-Control-Allow-Origin': '*',
+                'Cache-Control': 'max-age=3600'  # 1小时缓存
             }
-          }
-        }
-      }
-
-      log(`总共找到 ${results.length} 个结果`);
-
-      // 按质量排序
-      if (results.length > 0) {
-        results = this.sortByQuality(results);
-      }
-
-      return results;
-    } catch (e) {
-      log(`PornHub解析失败: ${e.message}`, "error");
-      log(`错误堆栈: ${e.stack}`, "error");
-      return [];
-    }
-  }
-
-  decodeVideoUrl(url) {
-    try {
-      // 检查是否是base64编码
-      if (url.includes('=') && url.length > 100) {
-        try {
-          const base64Regex = /^[A-Za-z0-9+/=]+$/;
-          // 提取可能的base64部分
-          const base64Match = url.match(/([A-Za-z0-9+/=]{40,})/);
-          if (base64Match && base64Regex.test(base64Match[1])) {
-            const decoded = atob(base64Match[1]);
-            if (decoded.startsWith('http')) {
-              return decoded;
-            }
-          }
-        } catch (e) {
-          // 忽略base64解码错误
-        }
-      }
-      
-      // URL解码
-      return decodeURIComponent(url);
-    } catch (e) {
-      return url;
-    }
-  }
-
-  extractQualityFromUrl(url) {
-    const qualityPatterns = [
-      /(\d{3,4})p/,
-      /(\d{3,4})P/,
-      /_(\d{3,4})_/,
-      /\/(\d{3,4})\//,
-      /quality=(\d{3,4})/,
-      /res=(\d{3,4})/
-    ];
+        )
     
-    for (const pattern of qualityPatterns) {
-      const match = url.match(pattern);
-      if (match && match[1]) {
-        return `${match[1]}p`;
-      }
-    }
-    
-    return "Unknown";
-  }
+    except Exception as e:
+        logger.error(f"Error in proxy_ts: {e}")
+        # 出错时回退到重定向
+        return redirect(original_url)
 
-  sortByQuality(results) {
-    return results.sort((a, b) => {
-      const qualityA = parseInt((a.format || '0p').replace(/[^0-9]/g, '')) || 0;
-      const qualityB = parseInt((b.format || '0p').replace(/[^0-9]/g, '')) || 0;
-      return qualityB - qualityA; // 降序排列，最高质量在前
-    });
-  }
 
-  async httpGet(url) {
-    return new Promise((resolve, reject) => {
-      $httpClient.get({
-        url: url,
-        headers: this.headers
-      }, (error, response, body) => {
-        if (error) {
-          reject(error);
-        } else {
-          resolve({
-            status: response.status,
-            headers: response.headers,
-            body: body
-          });
+@app.route('/health', methods=['GET'])
+def health_check():
+    """健康检查接口"""
+    return jsonify({
+        'status': 'ok',
+        'timestamp': time.time(),
+        'cache_stats': {
+            'video_cache': len(video_cache),
+            'info_cache': len(info_cache),
+            'm3u8_content_cache': len(m3u8_content_cache),
+            'ts_cache': len(ts_cache)
         }
-      });
-    });
-  }
-}
+    })
 
-// 获取并修复m3u8内容
-async function getM3u8Content(url, referer = null) {
-  try {
-    // 准备请求头
-    const headers = {...DEFAULT_HEADERS};
-    if (referer) {
-      headers['Referer'] = referer;
-    }
-    
-    return new Promise((resolve, reject) => {
-      $httpClient.get({
-        url: url,
-        headers: headers
-      }, (error, response, body) => {
-        if (error) {
-          log(`获取m3u8内容失败: ${error}`, "error");
-          reject(error);
-          return;
-        }
-        
-        if (response.status !== 200) {
-          log(`获取m3u8内容失败，状态码: ${response.status}`, "error");
-          reject(new Error(`HTTP status ${response.status}`));
-          return;
-        }
-        
-        // 检查是否是有效的m3u8内容
-        if (!body.trim().startsWith('#EXTM3U')) {
-          log(`无效的m3u8内容: ${body.substring(0, 100)}...`, "error");
-          reject(new Error("Invalid m3u8 content"));
-          return;
-        }
-        
-        log(`成功获取m3u8内容，来自 ${url}`);
-        resolve(body);
-      });
-    });
-  } catch (e) {
-    log(`获取m3u8内容错误: ${e.message}`, "error");
-    throw e;
-  }
-}
 
-// 获取ts文件内容
-async function getTsContent(url, referer = null) {
-  try {
-    // 准备请求头
-    const headers = {...DEFAULT_HEADERS};
-    if (referer) {
-      headers['Referer'] = referer;
-    }
-    
-    return new Promise((resolve, reject) => {
-      $httpClient.get({
-        url: url,
-        headers: headers
-      }, (error, response, body) => {
-        if (error) {
-          log(`获取ts内容失败: ${error}`, "error");
-          reject(error);
-          return;
-        }
-        
-        if (response.status !== 200) {
-          log(`获取ts内容失败，状态码: ${response.status}`, "error");
-          reject(new Error(`HTTP status ${response.status}`));
-          return;
-        }
-        
-        // 检查内容类型
-        const contentType = response.headers['Content-Type'] || '';
-        if (!contentType.includes('video') && !contentType.includes('octet-stream') && !contentType.includes('mpegurl')) {
-          log(`ts文件内容类型异常: ${contentType}`, "error");
-        }
-        
-        log(`成功获取ts内容，来自 ${url}，大小: ${body.length} 字节`);
-        resolve(body);
-      });
-    });
-  } catch (e) {
-    log(`获取ts内容错误: ${e.message}`, "error");
-    throw e;
-  }
-}
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=16813, debug=True)  # 开启debug查看详细日志
 
-// 修复m3u8内容，将相对路径转换为代理URL
-function fixM3u8Content(content, originalUrl, proxyBaseUrl) {
-  try {
-    // 解析原始URL
-    const urlObj = new URL(originalUrl);
-    const baseScheme = urlObj.protocol.replace(':', '');
-    const baseNetloc = urlObj.hostname;
-    const basePath = urlObj.pathname.substring(0, urlObj.pathname.lastIndexOf('/') + 1);
-    const baseQuery = urlObj.search.replace('?', '');
-    
-    const lines = content.split('\n');
-    const resultLines = [];
-    
-    for (const line of lines) {
-      // 跳过注释和空行
-      if (line.startsWith('#') || !line.trim()) {
-        resultLines.push(line);
-        continue;
-      }
-      
-      // 处理相对路径
-      if (!line.startsWith('http')) {
-        let absoluteUrl;
-        
-        // 检查是否包含查询参数
-        if (line.includes('?')) {
-          // 保留原始查询参数
-          const [path, query] = line.split('?', 2);
-          // 构建绝对URL
-          absoluteUrl = `${baseScheme}://${baseNetloc}${basePath}${path}?${query}`;
-        } else {
-          // 没有查询参数，但需要保留原始URL的查询参数
-          absoluteUrl = `${baseScheme}://${baseNetloc}${basePath}${line}`;
-          if (baseQuery) {
-            absoluteUrl += `?${baseQuery}`;
-          }
-        }
-        
-        // 创建代理URL
-        const tsId = makeId(absoluteUrl);
-        const proxyUrl = `${proxyBaseUrl}/ts/${tsId}`;
-        
-        // 缓存原始URL
-        cacheSet(CACHE_KEYS.VIDEO, tsId, {
-          url: absoluteUrl,
-          referer: originalUrl
-        });
-        
-        resultLines.push(proxyUrl);
-        log(`修复相对路径: ${line} -> ${proxyUrl}`);
-      } else {
-        // 已经是绝对路径，也转换为代理URL
-        const tsId = makeId(line);
-        const proxyUrl = `${proxyBaseUrl}/ts/${tsId}`;
-        
-        // 缓存原始URL
-        cacheSet(CACHE_KEYS.VIDEO, tsId, {
-          url: line,
-          referer: originalUrl
-        });
-        
-        resultLines.push(proxyUrl);
-        log(`代理绝对路径: ${line} -> ${proxyUrl}`);
-      }
-    }
-    
-    return resultLines.join('\n');
-  } catch (e) {
-    log(`修复m3u8内容失败: ${e.message}`, "error");
-    return content; // 出错时返回原始内容
-  }
-}
-
-// 初始化解析器
-const parser = new PornHubParser();
-
-// 主函数：处理所有请求
-async function handleRequest(request) {
-  const url = request.url;
-  const method = request.method;
-  
-  log(`收到请求: ${method} ${url}`);
-  
-  // 解析URL路径
-  const urlObj = new URL(url);
-  const path = urlObj.pathname;
-  
-  // 获取代理基础URL
-  const proxyBaseUrl = "http://pornhubapi.local";
-  
-  // 路由处理
-  try {
-    // 获取M3U8链接接口
-    if ((path === '/get_mp4_links' || path === '/get_m3u8_links') && method === 'POST') {
-      const requestBody = JSON.parse(request.body);
-      const videoUrl = requestBody.url;
-      
-      if (!videoUrl) {
-        return {
-          response: {
-            status: 400,
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ error: 'Missing URL parameter' })
-          }
-        };
-      }
-      
-      // 验证是否为PornHub URL
-      if (!videoUrl.toLowerCase().includes('pornhub.com')) {
-        return {
-          response: {
-            status: 400,
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ error: 'Only PornHub URLs are supported' })
-          }
-        };
-      }
-      
-      // 检查缓存
-      const cacheKey = makeId(videoUrl);
-      const cachedResult = cacheGet(CACHE_KEYS.INFO, cacheKey);
-      if (cachedResult) {
-        log(`使用缓存结果，URL: ${videoUrl}`);
-        return {
-          response: {
-            status: 200,
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ result: cachedResult })
-          }
-        };
-      }
-      
-      // 解析视频链接
-      log(`解析URL: ${videoUrl}`);
-      const results = await parser.parsePornhub(videoUrl);
-      
-      if (results.length === 0) {
-        return {
-          response: {
-            status: 404,
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ error: 'No M3U8 links found' })
-          }
-        };
-      }
-      
-      // 为每个链接创建代理URL并预加载m3u8内容
-      const proxyResults = [];
-      for (const result of results) {
-        const videoUrl = result.url;
-        const referer = result.referer || videoUrl;
-        const id = makeId(videoUrl);
-        
-        // 缓存视频URL和referer
-        cacheSet(CACHE_KEYS.VIDEO, id, {
-          url: videoUrl,
-          referer: referer
-        });
-        
-        // 预加载并修复m3u8内容
-        try {
-          const m3u8Content = await getM3u8Content(videoUrl, referer);
-          if (m3u8Content) {
-            // 修复m3u8内容，将相对路径转换为代理URL
-            const fixedContent = fixM3u8Content(m3u8Content, videoUrl, proxyBaseUrl);
-            cacheSet(CACHE_KEYS.M3U8, id, fixedContent);
-            log(`预加载并缓存m3u8内容，ID: ${id}`);
-          }
-        } catch (e) {
-          log(`预加载m3u8内容失败: ${e.message}`, "error");
-        }
-        
-        const proxyUrl = `${proxyBaseUrl}/proxy/${id}`;
-        
-        proxyResults.push({
-          format: result.format,
-          ext: result.ext,
-          url: proxyUrl,
-          type: result.type || 'hls',
-          viewkey: result.viewkey
-        });
-      }
-      
-      // 缓存结果
-      cacheSet(CACHE_KEYS.INFO, cacheKey, proxyResults);
-      
-      return {
-        response: {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            result: proxyResults,
-            count: proxyResults.length,
-            viewkey: results[0].viewkey || null
-          })
-        }
-      };
-    }
-    
-    // 获取直接M3U8链接接口
-    else if (path === '/get_direct_m3u8' && method === 'POST') {
-      const requestBody = JSON.parse(request.body);
-      const videoUrl = requestBody.url;
-      
-      if (!videoUrl) {
-        return {
-          response: {
-            status: 400,
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ error: 'Missing URL parameter' })
-          }
-        };
-      }
-      
-      // 验证是否为PornHub URL
-      if (!videoUrl.toLowerCase().includes('pornhub.com')) {
-        return {
-          response: {
-            status: 400,
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ error: 'Only PornHub URLs are supported' })
-          }
-        };
-      }
-      
-      // 解析视频链接
-      log(`获取直接M3U8链接，URL: ${videoUrl}`);
-      const results = await parser.parsePornhub(videoUrl);
-      
-      if (results.length === 0) {
-        return {
-          response: {
-            status: 404,
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ error: 'No M3U8 links found' })
-          }
-        };
-      }
-      
-      // 返回直接链接
-      const directResults = results.map(result => ({
-        format: result.format,
-        ext: result.ext,
-        url: result.url,  // 直接返回原始URL
-        type: result.type || 'hls',
-        viewkey: result.viewkey
-      }));
-      
-      return {
-        response: {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            result: directResults,
-            count: directResults.length,
-            viewkey: results[0].viewkey || null
-          })
-        }
-      };
-    }
-    
-    // 代理M3U8内容
-    else if (path.startsWith('/proxy/')) {
-      const id = path.replace('/proxy/', '');
-      
-      // 从缓存获取原始URL和referer
-      const videoData = cacheGet(CACHE_KEYS.VIDEO, id);
-      if (!videoData) {
-        return {
-          response: {
-            status: 404,
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ error: 'Invalid or expired proxy ID' })
-          }
-        };
-      }
-      
-      const originalUrl = videoData.url;
-      const referer = videoData.referer;
-      
-      // 尝试从缓存获取已修复的m3u8内容
-      const cachedContent = cacheGet(CACHE_KEYS.M3U8, id);
-      if (cachedContent) {
-        log(`提供缓存的m3u8内容，ID: ${id}`);
-        return {
-          response: {
-            status: 200,
-            headers: {
-              'Content-Type': 'application/vnd.apple.mpegurl',
-              'Access-Control-Allow-Origin': '*',
-              'Cache-Control': 'max-age=300'  // 5分钟缓存
-            },
-            body: cachedContent
-          }
-        };
-      }
-      
-      try {
-        // 获取m3u8内容
-        const m3u8Content = await getM3u8Content(originalUrl, referer);
-        
-        if (!m3u8Content) {
-          log(`获取m3u8内容失败，ID: ${id}，回退到重定向`, "error");
-          return {
-            response: {
-              status: 302,
-              headers: { 'Location': originalUrl }
-            }
-          };
-        }
-        
-        // 修复m3u8内容，将相对路径转换为代理URL
-        const fixedContent = fixM3u8Content(m3u8Content, originalUrl, proxyBaseUrl);
-        
-        // 缓存修复后的内容
-        cacheSet(CACHE_KEYS.M3U8, id, fixedContent);
-        
-        // 返回修复后的m3u8内容
-        return {
-          response: {
-            status: 200,
-            headers: {
-              'Content-Type': 'application/vnd.apple.mpegurl',
-              'Access-Control-Allow-Origin': '*',
-              'Cache-Control': 'max-age=300'  // 5分钟缓存
-            },
-            body: fixedContent
-          }
-        };
-      } catch (e) {
-        log(`代理m3u8内容错误: ${e.message}`, "error");
-        // 出错时回退到重定向
-        return {
-          response: {
-            status: 302,
-            headers: { 'Location': originalUrl }
-          }
-        };
-      }
-    }
-    
-    // 代理TS文件
-    else if (path.startsWith('/ts/')) {
-      const id = path.replace('/ts/', '');
-      
-      // 从缓存获取原始URL和referer
-      const videoData = cacheGet(CACHE_KEYS.VIDEO, id);
-      if (!videoData) {
-        return {
-          response: {
-            status: 404,
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ error: 'Invalid or expired proxy ID' })
-          }
-        };
-      }
-      
-      const originalUrl = videoData.url;
-      const referer = videoData.referer;
-      
-      // 尝试从缓存获取ts内容
-      const cachedContent = cacheGet(CACHE_KEYS.TS, id);
-      if (cachedContent) {
-        log(`提供缓存的ts内容，ID: ${id}`);
-        return {
-          response: {
-            status: 200,
-            headers: {
-              'Content-Type': 'video/mp2t',
-              'Access-Control-Allow-Origin': '*',
-              'Cache-Control': 'max-age=3600'  // 1小时缓存
-            },
-            body: cachedContent
-          }
-        };
-      }
-      
-      try {
-        // 获取ts内容
-        const tsContent = await getTsContent(originalUrl, referer);
-        
-        if (!tsContent) {
-          log(`获取ts内容失败，ID: ${id}，回退到重定向`, "error");
-          return {
-            response: {
-              status: 302,
-              headers: { 'Location': originalUrl }
-            }
-          };
-        }
-        
-        // 缓存ts内容
-        cacheSet(CACHE_KEYS.TS, id, tsContent);
-        
-        // 返回ts内容
-        return {
-          response: {
-            status: 200,
-            headers: {
-              'Content-Type': 'video/mp2t',
-              'Access-Control-Allow-Origin': '*',
-              'Cache-Control': 'max-age=3600'  // 1小时缓存
-            },
-            body: tsContent
-          }
-        };
-      } catch (e) {
-        log(`代理ts内容错误: ${e.message}`, "error");
-        // 出错时回退到重定向
-        return {
-          response: {
-            status: 302,
-            headers: { 'Location': originalUrl }
-          }
-        };
-      }
-    }
-    
-    // 健康检查接口
-    else if (path === '/health') {
-      return {
-        response: {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            status: 'ok',
-            timestamp: Date.now(),
-            version: '1.0.0'
-          })
-        }
-      };
-    }
-    
-    // 未知路径
-    else {
-      return {
-        response: {
-          status: 404,
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ error: 'Not Found' })
-        }
-      };
-    }
-  } catch (e) {
-    log(`请求处理错误: ${e.message}`, "error");
-    log(`错误堆栈: ${e.stack}`, "error");
-    
-    return {
-      response: {
-        status: 500,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ error: `Internal Server Error: ${e.message}` })
-      }
-    };
-  }
-}
-
-// 导出主函数
-exports.main = handleRequest;
