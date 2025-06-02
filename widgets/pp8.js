@@ -237,46 +237,58 @@ var VideoCache = {
     }
 };
 
-// 缓存管理接口
-// 缓存管理接口
+// 缓存管理接口（增强日志展示）
 function manageCache(params) {
     var action = params.action || 'view';
-    
+
     try {
         if (action === 'clear') {
             var count = VideoCache.clear();
-            var result = [
+            const lines = [];
+            lines.push("✅ 缓存清理完成");
+            lines.push("🧹 清理数量：" + count);
+            if (count === 0) lines.push("📭 当前没有缓存需要清理");
+            return [
                 {
                     id: "cache_clear_result",
                     type: "note",
                     title: "缓存清理结果",
-                    content: "已清理 " + count + " 个缓存项"
+                    content: lines.join("\n")
                 }
             ];
-            console.log("缓存清理结果（JSON）:", JSON.stringify(result, null, 2));
-            return result;
         } else {
             var status = VideoCache.status();
-            var result = [
+            const lines = [];
+
+            lines.push("📦 缓存状态报告");
+            lines.push("缓存总数：" + status.total);
+            lines.push("有效缓存：" + status.active);
+            lines.push("过期缓存：" + status.expired);
+            lines.push("缓存有效期：" + status.ttl + " 秒\n");
+
+            if (status.details.length === 0) {
+                lines.push("（当前无缓存记录）");
+            } else {
+                status.details.forEach((item, index) => {
+                    lines.push(`${index + 1}. viewkey: ${item.key}`);
+                    lines.push(`   ⏱️ 存活时间: ${item.age} 秒`);
+                    lines.push(`   状态: ${item.expired ? "❌ 已过期" : "✅ 有效"}`);
+                    lines.push(`   来源: ${item.source || "未知"}`);
+                });
+            }
+
+            return [
                 {
                     id: "cache_status",
                     type: "note",
-                    title: "缓存状态",
-                    content: JSON.stringify({
-                        "缓存总数": status.total,
-                        "有效缓存": status.active,
-                        "过期缓存": status.expired,
-                        "缓存有效期(秒)": status.ttl,
-                        "缓存详情": status.details
-                    }, null, 2)
+                    title: "📋 缓存状态详情",
+                    content: lines.join("\n")
                 }
             ];
-            console.log("缓存状态（JSON）:", JSON.stringify(result, null, 2));
-            return result;
         }
     } catch (err) {
         console.log("缓存操作失败：" + err.message);
-        var errorResult = [
+        return [
             {
                 id: "cache_error",
                 type: "note",
@@ -284,10 +296,9 @@ function manageCache(params) {
                 content: err.message
             }
         ];
-        console.log("缓存错误（JSON）:", JSON.stringify(errorResult, null, 2));
-        return errorResult;
     }
 }
+
 
 // 通用工具函数 - 减少代码冗余
 // 将时间格式（如"7:34"）转换为秒数
