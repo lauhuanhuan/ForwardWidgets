@@ -237,62 +237,57 @@ var VideoCache = {
     }
 };
 
-// 缓存管理接口（增强日志展示）
 function manageCache(params) {
     var action = params.action || 'view';
 
     try {
         if (action === 'clear') {
             var count = VideoCache.clear();
-            const lines = [];
-            lines.push("✅ 缓存清理完成");
-            lines.push("🧹 清理数量：" + count);
-            if (count === 0) lines.push("📭 当前没有缓存需要清理");
             return [
                 {
                     id: "cache_clear_result",
                     type: "note",
-                    title: "缓存清理结果",
-                    content: lines.join("\n")
+                    title: "🧹 缓存清理完成",
+                    content: "已清除缓存项数量：" + count
                 }
             ];
         } else {
             var status = VideoCache.status();
-            const lines = [];
+            var now = Date.now();
 
-            lines.push("📦 缓存状态报告");
-            lines.push("缓存总数：" + status.total);
-            lines.push("有效缓存：" + status.active);
-            lines.push("过期缓存：" + status.expired);
-            lines.push("缓存有效期：" + status.ttl + " 秒\n");
+            var content = "";
+            content += `📦 缓存总数：${status.total}\n`;
+            content += `🟢 有效缓存：${status.active}\n`;
+            content += `🔴 过期缓存：${status.expired}\n`;
+            content += `⏳ 缓存有效期：${status.ttl} 秒\n\n`;
 
             if (status.details.length === 0) {
-                lines.push("（当前无缓存记录）");
+                content += "📭 当前无任何缓存记录";
             } else {
-                status.details.forEach((item, index) => {
-                    lines.push(`${index + 1}. viewkey: ${item.key}`);
-                    lines.push(`   ⏱️ 存活时间: ${item.age} 秒`);
-                    lines.push(`   状态: ${item.expired ? "❌ 已过期" : "✅ 有效"}`);
-                    lines.push(`   来源: ${item.source || "未知"}`);
+                status.details.forEach(function(item, index) {
+                    content += `🔹 #${index + 1}\n`;
+                    content += `   ▶️ viewkey: ${item.key}\n`;
+                    content += `   ⏱️ 存活时长: ${item.age} 秒\n`;
+                    content += `   状态: ${item.expired ? "❌ 已过期" : "✅ 有效"}\n`;
+                    content += `   来源: ${item.source || "未知"}\n\n`;
                 });
             }
 
             return [
                 {
-                    id: "cache_status",
+                    id: "cache_status_log",
                     type: "note",
-                    title: "📋 缓存状态详情",
-                    content: lines.join("\n")
+                    title: "📋 本地缓存状态详情",
+                    content: content
                 }
             ];
         }
     } catch (err) {
-        console.log("缓存操作失败：" + err.message);
         return [
             {
                 id: "cache_error",
                 type: "note",
-                title: "缓存操作失败",
+                title: "❌ 缓存操作失败",
                 content: err.message
             }
         ];
